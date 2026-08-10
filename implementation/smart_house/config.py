@@ -45,58 +45,26 @@ COMMAND_SERVER_PASSWORD = "CHANGE_THIS_PASSWORD"
 # GPIO
 # =========================================================
 
-# Normal LED
 PIN_LED = 23
 
-
-# Buttons
 PIN_BUTTON_A = 26
 PIN_BUTTON_B = 25
 
-
-# Motion / PIR
 PIN_PIR = 12
 
-
-# Fan
-# GPIO 19 is the single control output.
-# HIGH = ON / clockwise
-# LOW = OFF
 PIN_FAN = 19
 
-
-# Buzzer
 PIN_BUZZER = 4
 
-
-# Temperature / humidity
 PIN_DHT = 18
-
-# Compatibility with existing code
 PIN_TEMP_HUMIDITY = PIN_DHT
 
-
-# Steam sensor
 PIN_STEAM = 5
-
 STEAM_ACTIVE_LEVEL = 1
 
-
-# =========================================================
-# RGB / WS2812
-# =========================================================
-
-# WS2812 data input
 PIN_RGB = 13
 
-# Four LEDs
 RGB_COUNT = 4
-
-# Physical arrangement:
-#
-#   0  1
-#   2  3
-#
 RGB_LAYOUT = "row-major"
 
 RGB_DEFAULT_R = 0
@@ -107,7 +75,7 @@ RGB_BRIGHTNESS = 80
 
 
 # =========================================================
-# Temperature / humidity
+# Sensors
 # =========================================================
 
 DHT_TYPE = "DHT11"
