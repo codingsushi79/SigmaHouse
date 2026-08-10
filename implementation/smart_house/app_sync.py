@@ -1,19 +1,5 @@
 """
-SigmaHouse synchronous firmware.
-
-Hardware:
-
-GPIO 5  -> steam sensor
-GPIO 12 -> PIR motion sensor
-GPIO 13 -> 4x WS2812 RGB
-GPIO 18 -> DHT11 temperature/humidity
-GPIO 19 -> clockwise-only fan
-GPIO 23 -> normal LED
-
-LCD:
-
-GPIO 21 -> SDA
-GPIO 22 -> SCL
+SigmaHouse synchronous application.
 """
 
 import time
@@ -49,10 +35,6 @@ DEVICES = (
 )
 
 
-# =========================================================
-# LCD
-# =========================================================
-
 def lcd_show(
     lcd,
     line1="",
@@ -75,40 +57,6 @@ def lcd_show(
 
 
 # =========================================================
-# Boot animation
-# =========================================================
-
-def boot_frame(
-    lcd,
-    filled,
-    total=7,
-):
-
-    filled = max(
-        0,
-        min(
-            total,
-            filled,
-        ),
-    )
-
-
-    bar = (
-        "["
-        + ("■" * filled)
-        + ("□" * (total - filled))
-        + "]"
-    )
-
-
-    lcd_show(
-        lcd,
-        "SIGMAHOUSE",
-        bar,
-    )
-
-
-# =========================================================
 # WiFi
 # =========================================================
 
@@ -125,6 +73,11 @@ def connect_wifi(lcd):
 
         ip = wlan.ifconfig()[0]
 
+        print(
+            "WiFi already connected:",
+            ip,
+        )
+
         lcd_show(
             lcd,
             "WiFi connected",
@@ -134,8 +87,15 @@ def connect_wifi(lcd):
         return ip
 
 
+    lcd_show(
+        lcd,
+        "Connecting WiFi",
+        config.WIFI_SSID,
+    )
+
+
     print(
-        "Connecting to WiFi:",
+        "Connecting to:",
         config.WIFI_SSID,
     )
 
@@ -157,8 +117,6 @@ def connect_wifi(lcd):
 
     start = time.ticks_ms()
 
-    frame = 0
-
 
     while not wlan.isconnected():
 
@@ -168,42 +126,32 @@ def connect_wifi(lcd):
         )
 
 
-        if (
-            elapsed
-            >= config.BOOT_WIFI_TIMEOUT_MS
+        if elapsed >= (
+            config.WIFI_TIMEOUT_S
+            * 1000
         ):
 
             print(
-                "WiFi timeout"
+                "WiFi connection timeout"
             )
 
-            break
+            lcd_show(
+                lcd,
+                "WiFi timeout",
+                "Retrying...",
+            )
 
+            time.sleep_ms(1000)
 
-        boot_frame(
-            lcd,
-            frame % 8,
-            7,
-        )
+            start = time.ticks_ms()
 
+            try:
 
-        frame += 1
+                wlan.disconnect()
 
-        time.sleep_ms(
-            config.BOOT_ANIMATION_DELAY_MS
-        )
+            except Exception:
+                pass
 
-
-    if not wlan.isconnected():
-
-        lcd_show(
-            lcd,
-            "WiFi FAILED",
-            "Retrying...",
-        )
-
-
-        while not wlan.isconnected():
 
             try:
 
@@ -216,35 +164,23 @@ def connect_wifi(lcd):
                 pass
 
 
-            for index in range(8):
-
-                if wlan.isconnected():
-                    break
-
-
-                boot_frame(
-                    lcd,
-                    index,
-                    7,
-                )
-
-
-                time.sleep_ms(
-                    config.BOOT_ANIMATION_DELAY_MS
-                )
+        time.sleep_ms(250)
 
 
     ip = wlan.ifconfig()[0]
 
 
-    lcd_show(
-        lcd,
-        "CONNECTED!",
+    print(
+        "WiFi connected:",
         ip,
     )
 
 
-    time.sleep_ms(1000)
+    lcd_show(
+        lcd,
+        "WiFi connected",
+        ip,
+    )
 
 
     return ip
@@ -290,7 +226,7 @@ def build_state(
 
 
 # =========================================================
-# Apply remote state
+# Remote state
 # =========================================================
 
 def apply_state(
@@ -301,9 +237,7 @@ def apply_state(
     rgb,
 ):
 
-    # -----------------------------------------------------
     # LED
-    # -----------------------------------------------------
 
     led_state = state.get(
         "led",
@@ -311,23 +245,19 @@ def apply_state(
     )
 
 
-    desired = bool(
-        led_state.get(
-            "active",
-            False,
-        )
-    )
+    if led_state.get(
+        "active",
+        False,
+    ):
 
-
-    if desired:
         led.on()
+
     else:
+
         led.off()
 
 
-    # -----------------------------------------------------
     # Fan
-    # -----------------------------------------------------
 
     fan_state = state.get(
         "fan",
@@ -335,23 +265,19 @@ def apply_state(
     )
 
 
-    desired = bool(
-        fan_state.get(
-            "active",
-            False,
-        )
-    )
+    if fan_state.get(
+        "active",
+        False,
+    ):
 
-
-    if desired:
         fan.on()
+
     else:
+
         fan.off()
 
 
-    # -----------------------------------------------------
     # Buzzer
-    # -----------------------------------------------------
 
     buzzer_state = state.get(
         "buzzer",
@@ -359,23 +285,19 @@ def apply_state(
     )
 
 
-    desired = bool(
-        buzzer_state.get(
-            "active",
-            False,
-        )
-    )
+    if buzzer_state.get(
+        "active",
+        False,
+    ):
 
-
-    if desired:
         buzzer.on()
+
     else:
+
         buzzer.off()
 
 
-    # -----------------------------------------------------
     # RGB
-    # -----------------------------------------------------
 
     rgb_state = state.get(
         "rgb",
@@ -463,12 +385,12 @@ def run():
     lcd_show(
         lcd,
         "SIGMAHOUSE",
-        "[□□□□□□□]",
+        "Starting...",
     )
 
 
     # -----------------------------------------------------
-    # Devices
+    # Hardware
     # -----------------------------------------------------
 
     led = safe(
@@ -531,8 +453,7 @@ def run():
 
     environment = safe(
         lambda: TemperatureHumidity(
-            config.PIN_TEMP_HUMIDITY,
-            config.DHT_TYPE,
+            config.PIN_TEMP_HUMIDITY
         ),
         "Temperature/Humidity",
     )
@@ -557,7 +478,7 @@ def run():
 
 
     # -----------------------------------------------------
-    # Unique ID
+    # ID
     # -----------------------------------------------------
 
     uid = (
@@ -571,7 +492,7 @@ def run():
 
 
     print(
-        "My house ID:",
+        "House ID:",
         uid,
     )
 
@@ -586,15 +507,23 @@ def run():
     )
 
 
-    result = hub.register(
-        ip
-    )
+    try:
 
+        result = hub.register(
+            ip
+        )
 
-    print(
-        "Hub registration:",
-        result,
-    )
+        print(
+            "Hub registration:",
+            result,
+        )
+
+    except Exception as error:
+
+        print(
+            "Hub registration failed:",
+            error,
+        )
 
 
     # -----------------------------------------------------
@@ -609,17 +538,25 @@ def run():
         try:
 
             command_server = CommandServer(
-                led,
-                fan,
-                buzzer,
-                motion,
-                config.COMMAND_SERVER_PORT,
-                config.COMMAND_SERVER_PASSWORD,
+                led=led,
+                fan=fan,
+                buzzer=buzzer,
+                motion=motion,
+                dht_sensor=environment,
+                steam=steam,
+                rgb=rgb,
+                port=config.COMMAND_SERVER_PORT,
+                password=config.COMMAND_SERVER_PASSWORD,
             )
 
 
             command_server.start()
 
+
+            print(
+                "Command server started:",
+                config.COMMAND_SERVER_PORT,
+            )
 
         except Exception as error:
 
@@ -629,52 +566,71 @@ def run():
             )
 
 
-            command_server = None
-
-
     # -----------------------------------------------------
     # Initial sensor read
     # -----------------------------------------------------
 
-    environment.read()
+    try:
+
+        environment.read()
+
+    except Exception as error:
+
+        print(
+            "Initial DHT read failed:",
+            error,
+        )
 
 
     # -----------------------------------------------------
     # Initial state
     # -----------------------------------------------------
 
-    hub.push_state(
-        build_state(
-            led,
-            fan,
-            buzzer,
-            rgb,
-            motion,
-            steam,
-            environment,
+    try:
+
+        hub.push_state(
+            build_state(
+                led,
+                fan,
+                buzzer,
+                rgb,
+                motion,
+                steam,
+                environment,
+            )
         )
-    )
+
+    except Exception as error:
+
+        print(
+            "Initial state push failed:",
+            error,
+        )
 
 
     lcd_show(
         lcd,
+        "SigmaHouse",
         "Ready",
-        uid[-8:],
+    )
+
+
+    # -----------------------------------------------------
+    # Timers
+    # -----------------------------------------------------
+
+    last_sensor = (
+        time.ticks_ms()
+    )
+
+    last_keepalive = (
+        time.ticks_ms()
     )
 
 
     # -----------------------------------------------------
     # Main loop
     # -----------------------------------------------------
-
-    last_keepalive = (
-        time.ticks_ms()
-    )
-
-    last_sensor = (
-        time.ticks_ms()
-    )
-
 
     while True:
 
@@ -686,42 +642,38 @@ def run():
 
             if command_server is not None:
 
-                command_server.poll()
+                try:
 
+                    command_server.poll()
 
-            # ---------------------------------------------
-            # Buttons
-            # ---------------------------------------------
+                except Exception as error:
 
-            if button_a.was_pressed():
-
-                lcd_show(
-                    lcd,
-                    "SigmaHouse",
-                    "Button A",
-                )
-
-
-            if button_b.was_pressed():
-
-                lcd_show(
-                    lcd,
-                    "SigmaHouse",
-                    "Button B",
-                )
+                    print(
+                        "Command server error:",
+                        error,
+                    )
 
 
             # ---------------------------------------------
             # Motion
             # ---------------------------------------------
 
-            if motion.was_triggered():
+            try:
+
+                if motion.was_triggered():
+
+                    print(
+                        "Motion detected"
+                    )
+
+                    hub.report_motion()
+
+            except Exception as error:
 
                 print(
-                    "Motion detected"
+                    "Motion error:",
+                    error,
                 )
-
-                hub.report_motion()
 
 
             # ---------------------------------------------
@@ -738,20 +690,38 @@ def run():
                 )
 
 
-                environment.read()
+                try:
 
+                    environment.read()
 
-                hub.push_state(
-                    build_state(
-                        led,
-                        fan,
-                        buzzer,
-                        rgb,
-                        motion,
-                        steam,
-                        environment,
+                except Exception as error:
+
+                    print(
+                        "DHT error:",
+                        error,
                     )
-                )
+
+
+                try:
+
+                    hub.push_state(
+                        build_state(
+                            led,
+                            fan,
+                            buzzer,
+                            rgb,
+                            motion,
+                            steam,
+                            environment,
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "State push error:",
+                        error,
+                    )
 
 
             # ---------------------------------------------
@@ -768,9 +738,20 @@ def run():
                 )
 
 
-                response = hub.keepalive(
-                    ip
-                )
+                try:
+
+                    response = hub.keepalive(
+                        ip
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "Keepalive error:",
+                        error,
+                    )
+
+                    response = None
 
 
                 if response:
@@ -780,9 +761,14 @@ def run():
                         False,
                     ):
 
-                        buzzer.beep(
-                            250
-                        )
+                        try:
+
+                            buzzer.beep(
+                                250
+                            )
+
+                        except Exception:
+                            pass
 
 
                     if response.get(
@@ -790,19 +776,28 @@ def run():
                         False,
                     ):
 
-                        remote_state = (
-                            hub.get_state()
-                        )
+                        try:
+
+                            remote_state = (
+                                hub.get_state()
+                            )
 
 
-                        if remote_state:
+                            if remote_state:
 
-                            apply_state(
-                                remote_state,
-                                led,
-                                fan,
-                                buzzer,
-                                rgb,
+                                apply_state(
+                                    remote_state,
+                                    led,
+                                    fan,
+                                    buzzer,
+                                    rgb,
+                                )
+
+                        except Exception as error:
+
+                            print(
+                                "Remote state error:",
+                                error,
                             )
 
 
