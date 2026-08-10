@@ -1,30 +1,31 @@
 """SigmaHouse Smart House configuration."""
 
-from secrets import WIFI_SSID, WIFI_PASS, HUB_URL  # noqa: F401
+from secrets import WIFI_SSID, WIFI_PASS, HUB_URL
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Firmware
-# ---------------------------------------------------------
+# =========================================================
 
-# Keep the synchronous version as the default.
 USE_ASYNC = False
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Timing
-# ---------------------------------------------------------
+# =========================================================
 
 UPDATE_INTERVAL_MS = 1000
-
 WIFI_TIMEOUT_S = 15
-
 SENSOR_INTERVAL_MS = 2000
 
+# Boot animation while WiFi connects.
+BOOT_ANIMATION_DELAY_MS = 180
+BOOT_WIFI_TIMEOUT_MS = WIFI_TIMEOUT_S * 1000
 
-# ---------------------------------------------------------
+
+# =========================================================
 # Messaging
-# ---------------------------------------------------------
+# =========================================================
 
 SEND_MODE = "pick"
 
@@ -33,9 +34,9 @@ MESSAGE_TO = "PASTE_FRIEND_ID_HERE"
 MESSAGE_TEXT = "HELLO FROM MY HOUSE"
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Network command terminal
-# ---------------------------------------------------------
+# =========================================================
 
 COMMAND_SERVER_ENABLED = True
 
@@ -44,110 +45,99 @@ COMMAND_SERVER_PORT = 2222
 COMMAND_SERVER_PASSWORD = "CHANGE_THIS_PASSWORD"
 
 
-# ---------------------------------------------------------
-# GPIO pins
-# ---------------------------------------------------------
+# =========================================================
+# GPIO
+# =========================================================
 
-# Normal single-color LED.
+# Normal LED
 PIN_LED = 23
 
 
-# Existing buttons.
+# Buttons
 PIN_BUTTON_A = 26
 PIN_BUTTON_B = 25
 
 
-# PIR motion sensor.
+# PIR motion sensor
 PIN_PIR = 12
 
 
-# Single-wire fan output.
+# Fan
 #
-# GPIO19 HIGH = fan receives +
-# GPIO19 LOW  = fan off
+# GPIO 19:
+#   HIGH = fan ON / clockwise
+#   LOW  = fan OFF
 #
-# There is intentionally NO reverse direction anymore.
+# There is deliberately no reverse direction.
 PIN_FAN = 19
 
 
-# Existing buzzer.
+# Buzzer
 PIN_BUZZER = 4
 
 
-# Temperature / humidity sensor.
+# Temperature / humidity
 PIN_DHT = 18
 
+# Compatibility alias for existing code.
+PIN_TEMP_HUMIDITY = PIN_DHT
 
-# Steam / water sensor.
+
+# Steam sensor
 PIN_STEAM = 5
 
 
-# WS2812 / WS2812B RGB LED data.
+# WS2812 / NeoPixel data
 PIN_RGB = 13
 
-
-# Four LEDs arranged physically as a 2x2 grid.
+# Four LEDs in a 2x2 physical arrangement:
+#
+#   0  1
+#   2  3
+#
 RGB_COUNT = 4
 
-
-# If your physical chain goes:
-#
-#   0 1
-#   2 3
-#
-# this is the natural row-major mapping.
-#
-# If the LEDs are wired in a serpentine pattern, change this
-# later in devices/rgb.py.
 RGB_LAYOUT = "row-major"
 
-
-# Default RGB color.
 RGB_DEFAULT_R = 0
 RGB_DEFAULT_G = 0
 RGB_DEFAULT_B = 0
 
-
-# Global brightness, 0-255.
 RGB_BRIGHTNESS = 80
 
 
-# ---------------------------------------------------------
-# Temperature / humidity sensor
-# ---------------------------------------------------------
+# =========================================================
+# Temperature / humidity
+# =========================================================
 
-# "DHT11" or "DHT22"
 DHT_TYPE = "DHT11"
 
 
-# ---------------------------------------------------------
-# Steam sensor
-# ---------------------------------------------------------
+# =========================================================
+# Steam
+# =========================================================
 
-# Most digital steam/water sensors report HIGH when triggered.
-# Change to 0 if your particular module is active-low.
+# HIGH means steam detected.
 STEAM_ACTIVE_LEVEL = 1
 
 
-# ---------------------------------------------------------
-# I2C / LCD
-# ---------------------------------------------------------
+# =========================================================
+# Fan
+# =========================================================
+
+FAN_PWM_FREQ = 1000
+
+FAN_PWM_DUTY = 512
+
+
+# =========================================================
+# LCD
+# =========================================================
 
 PIN_I2C_SCL = 22
-
 PIN_I2C_SDA = 21
 
 LCD_I2C_ADDR = 0x27
 
 LCD_ROWS = 2
-
 LCD_COLS = 16
-
-
-# ---------------------------------------------------------
-# Startup
-# ---------------------------------------------------------
-
-STARTUP_ANIMATION_MS = 180
-
-STARTUP_WIFI_STEP_MS = 250
