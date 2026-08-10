@@ -153,6 +153,7 @@ def connect_wifi(lcd):
                 )
 
             except Exception:
+
                 pass
 
         time.sleep_ms(250)
@@ -283,6 +284,7 @@ def rgb_startup_test(
             rgb.off()
 
         except Exception:
+
             pass
 
     time.sleep_ms(300)
@@ -362,8 +364,11 @@ def hardware_self_test(
         )
 
         try:
+
             led.off()
+
         except Exception:
+
             pass
 
     time.sleep_ms(300)
@@ -398,8 +403,11 @@ def hardware_self_test(
         )
 
         try:
+
             fan.off()
+
         except Exception:
+
             pass
 
     time.sleep_ms(300)
@@ -447,8 +455,11 @@ def hardware_self_test(
             )
 
     try:
+
         buzzer.off()
+
     except Exception:
+
         pass
 
     time.sleep_ms(300)
@@ -614,23 +625,35 @@ def hardware_self_test(
     )
 
     try:
+
         rgb.off()
+
     except Exception:
+
         pass
 
     try:
+
         led.off()
+
     except Exception:
+
         pass
 
     try:
+
         fan.off()
+
     except Exception:
+
         pass
 
     try:
+
         buzzer.off()
+
     except Exception:
+
         pass
 
     print()
@@ -1451,6 +1474,7 @@ def run():
                             )
 
                         except Exception:
+
                             pass
 
                     # -----------------------------------------
@@ -1506,3 +1530,12 @@ def run():
             )
 
             time.sleep_ms(500)
+
+
+# =========================================================
+# Direct execution
+# =========================================================
+
+if __name__ == "__main__":
+
+    run()
