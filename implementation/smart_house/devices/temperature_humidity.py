@@ -1,5 +1,5 @@
 """
-DHT temperature/humidity sensor.
+SigmaHouse DHT11 temperature/humidity sensor.
 """
 
 import dht
@@ -11,7 +11,9 @@ class TemperatureHumidity:
 
     def __init__(self, pin_num):
 
-        self._pin = Pin(pin_num)
+        self._pin = Pin(
+            pin_num
+        )
 
         self._sensor = dht.DHT11(
             self._pin
@@ -28,7 +30,7 @@ class TemperatureHumidity:
 
             self._sensor.measure()
 
-            temperature = (
+            temperature_c = (
                 self._sensor.temperature()
             )
 
@@ -36,15 +38,18 @@ class TemperatureHumidity:
                 self._sensor.humidity()
             )
 
-            self._temperature_c = temperature
+            self._temperature_c = (
+                temperature_c
+            )
 
             self._temperature_f = (
-                temperature * 9 / 5
+                temperature_c * 9 / 5
             ) + 32
 
             self._humidity = humidity
 
             return True
+
 
         except Exception as error:
 
@@ -59,6 +64,7 @@ class TemperatureHumidity:
     def state(self):
 
         return {
+
             "temperature_c":
                 self._temperature_c,
 
