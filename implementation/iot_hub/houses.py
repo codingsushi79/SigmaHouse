@@ -1,211 +1,989 @@
-"""In-memory store of registered houses.
+"""
+In-memory store of registered SigmaHouse devices.
 
-This module is the only place that reads or writes the HOUSES dict.
-It has no Flask imports on purpose: app.py handles HTTP, this file
-handles data. That makes it easy to test in a Python REPL.
+This module owns the HOUSES dictionary.
+Flask / HTTP handling stays in app.py.
 """
 
 import time
+
 from datetime import datetime, timedelta
+
 from threading import Lock
 
-from constants import LOST_AFTER_S, MAX_MESSAGES, MOTION_HOLD_S, VALID_DEVICES
+from constants import (
+    LOST_AFTER_S,
+    MAX_MESSAGES,
+    MOTION_HOLD_S,
+    RGB_PIXEL_COUNT,
+    RGB_MAX_VALUE,
+    VALID_DEVICES,
+)
 
-# {unique_id: house_record}. Lost on server restart -- devices re-register
-# automatically on their next keepalive (which will get a 404 and trigger
-# them to POST /api/houses again from the firmware).
-HOUSES: dict[str, dict] = {}
 
-# {unique_id: monotonic seconds of last motion report}. Kept OUT of the
-# house record so the records stay JSON-clean for jsonify().
-_MOTION_TS: dict[str, float] = {}
+# ---------------------------------------------------------
+# Storage
+# ---------------------------------------------------------
 
-# {unique_id: [ {"from", "text", "time"}, ... ]}. A private mailbox per house.
-# Sidecar (like _MOTION_TS) on purpose: mailboxes stay OUT of list_all(), so a
-# house's messages are never shown on the dashboard -- only its owner reads them.
-_MESSAGES: dict[str, list] = {}
+# {
+#     unique_id: {
+#         ...
+#     }
+# }
+HOUSES = {}
 
-# One coarse lock around the whole dict. Flask's dev server can serve
-# requests from multiple threads, so we need this to keep updates atomic.
+
+# Last motion timestamp.
+#
+# Kept outside HOUSES because monotonic timestamps aren't
+# JSON serializable.
+_MOTION_TS = {}
+
+
+# Per-house mailbox.
+_MESSAGES = {}
+
+
 _LOCK = Lock()
 
 
+# ---------------------------------------------------------
+# Time
+# ---------------------------------------------------------
+
 def now_str() -> str:
-    """Current local time as 'YYYY-MM-DD HH:MM:SS'."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Return local server time."""
+
+    return datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
-def _default_state() -> dict:
+# ---------------------------------------------------------
+# Default state
+# ---------------------------------------------------------
+
+def _default_rgb():
+    """Create the default four-pixel RGB state."""
+
     return {
-        "led": {"active": False},
-        "fan": {"active": False, "clockwise": True},
-        "buzzer": {"active": False},
-        "motion": {"detected": False},
+        "active": False,
+
+        "brightness": 80,
+
+        "colors": [
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+        ],
+
+        "count": RGB_PIXEL_COUNT,
+
+        "layout": "2x2",
     }
 
 
-def _expire_motion(house: dict) -> None:
-    """Clear a house's 'Motion!' once MOTION_HOLD_S has passed since the report."""
-    if not house["state"]["motion"]["detected"]:
-        return
-    ts = _MOTION_TS.get(house["unique_id"])
-    if ts is not None and time.monotonic() - ts >= MOTION_HOLD_S:
-        house["state"]["motion"]["detected"] = False
+def _default_state() -> dict:
+    """
+    Default complete house state.
 
+    The ESP32 will periodically replace this with its actual
+    state after registering.
+    """
+
+    return {
+        # -------------------------------------------------
+        # Outputs
+        # -------------------------------------------------
+
+        "led": {
+            "active": False,
+        },
+
+        "fan": {
+            "active": False,
+
+            # The new fan is physically clockwise-only.
+            "clockwise": True,
+        },
+
+        "buzzer": {
+            "active": False,
+        },
+
+        "rgb": _default_rgb(),
+
+        # -------------------------------------------------
+        # Sensors
+        # -------------------------------------------------
+
+        "motion": {
+            "detected": False,
+        },
+
+        "steam": {
+            "detected": False,
+        },
+
+        "environment": {
+            "temperature_c": None,
+            "temperature_f": None,
+            "humidity": None,
+            "sensor": None,
+            "last_read_ms": None,
+        },
+    }
+
+
+# ---------------------------------------------------------
+# State normalization
+# ---------------------------------------------------------
+
+def _normalize_state(state: dict) -> dict:
+    """
+    Merge an incoming ESP32 state with the complete state
+    schema.
+
+    This means an older ESP32 firmware won't destroy newer
+    fields when it sends its state.
+    """
+
+    default = _default_state()
+
+    if not isinstance(state, dict):
+        return default
+
+    # -----------------------------------------------------
+    # Simple devices
+    # -----------------------------------------------------
+
+    for device in (
+        "led",
+        "fan",
+        "buzzer",
+        "motion",
+        "steam",
+    ):
+
+        incoming = state.get(
+            device
+        )
+
+        if isinstance(incoming, dict):
+            default[device].update(
+                incoming
+            )
+
+    # -----------------------------------------------------
+    # RGB
+    # -----------------------------------------------------
+
+    incoming_rgb = state.get(
+        "rgb"
+    )
+
+    if isinstance(
+        incoming_rgb,
+        dict,
+    ):
+
+        default["rgb"].update(
+            incoming_rgb
+        )
+
+        colors = incoming_rgb.get(
+            "colors"
+        )
+
+        if isinstance(
+            colors,
+            list,
+        ):
+
+            normalized_colors = []
+
+            for i in range(
+                RGB_PIXEL_COUNT
+            ):
+
+                if i < len(colors):
+
+                    color = colors[i]
+
+                    if (
+                        isinstance(
+                            color,
+                            (list, tuple),
+                        )
+                        and len(color) >= 3
+                    ):
+
+                        normalized_colors.append(
+                            [
+                                max(
+                                    0,
+                                    min(
+                                        RGB_MAX_VALUE,
+                                        int(color[0]),
+                                    ),
+                                ),
+                                max(
+                                    0,
+                                    min(
+                                        RGB_MAX_VALUE,
+                                        int(color[1]),
+                                    ),
+                                ),
+                                max(
+                                    0,
+                                    min(
+                                        RGB_MAX_VALUE,
+                                        int(color[2]),
+                                    ),
+                                ),
+                            ]
+                        )
+
+                        continue
+
+                normalized_colors.append(
+                    [0, 0, 0]
+                )
+
+            default["rgb"][
+                "colors"
+            ] = normalized_colors
+
+    # -----------------------------------------------------
+    # Environment
+    # -----------------------------------------------------
+
+    environment = state.get(
+        "environment"
+    )
+
+    if isinstance(
+        environment,
+        dict,
+    ):
+
+        default[
+            "environment"
+        ].update(
+            environment
+        )
+
+    return default
+
+
+# ---------------------------------------------------------
+# Motion
+# ---------------------------------------------------------
+
+def _expire_motion(house: dict) -> None:
+    """
+    Automatically clear Motion! after MOTION_HOLD_S.
+    """
+
+    motion = house["state"]["motion"]
+
+    if not motion["detected"]:
+        return
+
+    timestamp = _MOTION_TS.get(
+        house["unique_id"]
+    )
+
+    if timestamp is None:
+        return
+
+    if (
+        time.monotonic()
+        - timestamp
+        >= MOTION_HOLD_S
+    ):
+
+        motion["detected"] = False
+
+
+# ---------------------------------------------------------
+# Houses
+# ---------------------------------------------------------
 
 def list_all() -> list[dict]:
-    """Return a snapshot of every house, for the dashboard."""
+    """Return all registered houses."""
+
     with _LOCK:
+
         for house in HOUSES.values():
             _expire_motion(house)
-        return list(HOUSES.values())
+
+        return list(
+            HOUSES.values()
+        )
 
 
-def register(unique_id: str, ip_address: str) -> dict:
-    """Create or refresh a house record."""
+def register(
+    unique_id: str,
+    ip_address: str,
+) -> dict:
+    """
+    Register or re-register a house.
+    """
+
     with _LOCK:
-        HOUSES[unique_id] = {
+
+        # Preserve existing state when a device reconnects.
+        existing = HOUSES.get(
+            unique_id
+        )
+
+        if existing is not None:
+
+            existing[
+                "ip_address"
+            ] = ip_address
+
+            existing[
+                "status"
+            ] = "Active"
+
+            existing[
+                "last_seen"
+            ] = now_str()
+
+            return existing
+
+        house = {
             "unique_id": unique_id,
+
             "ip_address": ip_address,
+
             "status": "Active",
+
             "last_seen": now_str(),
+
             "alarm_armed": False,
+
             "alarm_triggered": False,
+
             "pending_state_update": False,
+
             "state": _default_state(),
         }
-        return HOUSES[unique_id]
+
+        HOUSES[
+            unique_id
+        ] = house
+
+        return house
 
 
-def keepalive(unique_id: str, ip_address: str) -> dict | None:
-    """Mark the house as alive. Returns flags telling the device what to do.
+# ---------------------------------------------------------
+# Keepalive
+# ---------------------------------------------------------
 
-    The 'alarm' flag is one-shot: returning True clears it, so the device
-    only fires its buzzer once per motion event.
-    """
+def keepalive(
+    unique_id: str,
+    ip_address: str,
+) -> dict | None:
+
     with _LOCK:
-        house = HOUSES.get(unique_id)
+
+        house = HOUSES.get(
+            unique_id
+        )
+
         if house is None:
             return None
-        house["last_seen"] = now_str()
-        house["ip_address"] = ip_address
-        house["status"] = "Active"
-        alarm = house["alarm_triggered"]
-        house["alarm_triggered"] = False
+
+        house[
+            "last_seen"
+        ] = now_str()
+
+        house[
+            "ip_address"
+        ] = ip_address
+
+        house[
+            "status"
+        ] = "Active"
+
+        alarm = house[
+            "alarm_triggered"
+        ]
+
+        house[
+            "alarm_triggered"
+        ] = False
+
         return {
             "alarm": alarm,
-            "state_update": house["pending_state_update"],
-            "message": bool(_MESSAGES.get(unique_id)),   # True if mail is waiting
+
+            "state_update":
+                house[
+                    "pending_state_update"
+                ],
+
+            "message":
+                bool(
+                    _MESSAGES.get(
+                        unique_id
+                    )
+                ),
         }
 
 
-def get_state(unique_id: str) -> dict | None:
-    """Return the current desired state. Clears the pending flag."""
+# ---------------------------------------------------------
+# State
+# ---------------------------------------------------------
+
+def get_state(
+    unique_id: str,
+) -> dict | None:
+
     with _LOCK:
-        house = HOUSES.get(unique_id)
+
+        house = HOUSES.get(
+            unique_id
+        )
+
         if house is None:
             return None
-        house["pending_state_update"] = False
-        return house["state"]
+
+        house[
+            "pending_state_update"
+        ] = False
+
+        _expire_motion(
+            house
+        )
+
+        return house[
+            "state"
+        ]
 
 
-def set_state(unique_id: str, state: dict) -> bool:
-    """Device pushes its actual current state (after applying changes)."""
+def set_state(
+    unique_id: str,
+    state: dict,
+) -> bool:
+
     with _LOCK:
-        house = HOUSES.get(unique_id)
+
+        house = HOUSES.get(
+            unique_id
+        )
+
         if house is None:
             return False
-        house["state"] = state
+
+        house[
+            "state"
+        ] = _normalize_state(
+            state
+        )
+
         return True
 
 
-def toggle_device(unique_id: str, device: str) -> bool:
-    """Flip the 'active' bit of led/fan/buzzer and signal a state update."""
+# ---------------------------------------------------------
+# Device toggles
+# ---------------------------------------------------------
+
+def toggle_device(
+    unique_id: str,
+    device: str,
+) -> bool:
+
     if device not in VALID_DEVICES:
         return False
+
     with _LOCK:
-        house = HOUSES.get(unique_id)
+
+        house = HOUSES.get(
+            unique_id
+        )
+
         if house is None:
             return False
-        house["state"][device]["active"] = not house["state"][device]["active"]
-        house["pending_state_update"] = True
+
+        current = house[
+            "state"
+        ].get(
+            device
+        )
+
+        if not isinstance(
+            current,
+            dict,
+        ):
+            return False
+
+        current[
+            "active"
+        ] = not bool(
+            current.get(
+                "active",
+                False,
+            )
+        )
+
+        # RGB has an additional state structure, but its
+        # active field is all the toggle endpoint needs.
+        house[
+            "pending_state_update"
+        ] = True
+
         return True
 
 
-def arm_alarm(unique_id: str, armed: bool) -> bool:
-    """Arm or disarm the alarm. Disarming also clears any active buzzer."""
+# ---------------------------------------------------------
+# RGB
+# ---------------------------------------------------------
+
+def set_rgb(
+    unique_id: str,
+    colors=None,
+    brightness=None,
+    active=None,
+) -> bool:
+
     with _LOCK:
-        house = HOUSES.get(unique_id)
+
+        house = HOUSES.get(
+            unique_id
+        )
+
         if house is None:
             return False
-        house["alarm_armed"] = armed
+
+        rgb = house[
+            "state"
+        ][
+            "rgb"
+        ]
+
+        if brightness is not None:
+
+            brightness = max(
+                0,
+                min(
+                    RGB_MAX_VALUE,
+                    int(brightness),
+                ),
+            )
+
+            rgb[
+                "brightness"
+            ] = brightness
+
+        if active is not None:
+
+            rgb[
+                "active"
+            ] = bool(
+                active
+            )
+
+        if colors is not None:
+
+            if not isinstance(
+                colors,
+                list,
+            ):
+                return False
+
+            normalized = []
+
+            for i in range(
+                RGB_PIXEL_COUNT
+            ):
+
+                if i >= len(colors):
+                    return False
+
+                color = colors[i]
+
+                if (
+                    not isinstance(
+                        color,
+                        (list, tuple),
+                    )
+                    or len(color) < 3
+                ):
+                    return False
+
+                normalized.append(
+                    [
+                        max(
+                            0,
+                            min(
+                                RGB_MAX_VALUE,
+                                int(color[0]),
+                            ),
+                        ),
+                        max(
+                            0,
+                            min(
+                                RGB_MAX_VALUE,
+                                int(color[1]),
+                            ),
+                        ),
+                        max(
+                            0,
+                            min(
+                                RGB_MAX_VALUE,
+                                int(color[2]),
+                            ),
+                        ),
+                    ]
+                )
+
+            rgb[
+                "colors"
+            ] = normalized
+
+        house[
+            "pending_state_update"
+        ] = True
+
+        return True
+
+
+def set_rgb_color(
+    unique_id: str,
+    r: int,
+    g: int,
+    b: int,
+) -> bool:
+
+    color = [
+        max(
+            0,
+            min(
+                RGB_MAX_VALUE,
+                int(r),
+            ),
+        ),
+        max(
+            0,
+            min(
+                RGB_MAX_VALUE,
+                int(g),
+            ),
+        ),
+        max(
+            0,
+            min(
+                RGB_MAX_VALUE,
+                int(b),
+            ),
+        ),
+    ]
+
+    return set_rgb(
+        unique_id,
+        colors=[
+            color.copy(),
+            color.copy(),
+            color.copy(),
+            color.copy(),
+        ],
+        active=True,
+    )
+
+
+def set_rgb_pixel(
+    unique_id: str,
+    index: int,
+    r: int,
+    g: int,
+    b: int,
+) -> bool:
+
+    index = int(index)
+
+    if (
+        index < 0
+        or index >= RGB_PIXEL_COUNT
+    ):
+        return False
+
+    with _LOCK:
+
+        house = HOUSES.get(
+            unique_id
+        )
+
+        if house is None:
+            return False
+
+        colors = house[
+            "state"
+        ][
+            "rgb"
+        ][
+            "colors"
+        ]
+
+        colors[index] = [
+            max(
+                0,
+                min(
+                    RGB_MAX_VALUE,
+                    int(r),
+                ),
+            ),
+            max(
+                0,
+                min(
+                    RGB_MAX_VALUE,
+                    int(g),
+                ),
+            ),
+            max(
+                0,
+                min(
+                    RGB_MAX_VALUE,
+                    int(b),
+                ),
+            ),
+        ]
+
+        house[
+            "state"
+        ][
+            "rgb"
+        ][
+            "active"
+        ] = True
+
+        house[
+            "pending_state_update"
+        ] = True
+
+        return True
+
+
+# ---------------------------------------------------------
+# Alarm
+# ---------------------------------------------------------
+
+def arm_alarm(
+    unique_id: str,
+    armed: bool,
+) -> bool:
+
+    with _LOCK:
+
+        house = HOUSES.get(
+            unique_id
+        )
+
+        if house is None:
+            return False
+
+        house[
+            "alarm_armed"
+        ] = armed
+
         if not armed:
-            house["alarm_triggered"] = False
-            house["state"]["buzzer"]["active"] = False
-            house["pending_state_update"] = True
+
+            house[
+                "alarm_triggered"
+            ] = False
+
+            house[
+                "state"
+            ][
+                "buzzer"
+            ][
+                "active"
+            ] = False
+
+            house[
+                "pending_state_update"
+            ] = True
+
         return True
 
 
-def report_motion(unique_id: str) -> bool:
-    """A device reports motion. If it's armed, fire all armed houses."""
+# ---------------------------------------------------------
+# Motion
+# ---------------------------------------------------------
+
+def report_motion(
+    unique_id: str,
+) -> bool:
+
     with _LOCK:
-        reporter = HOUSES.get(unique_id)
+
+        reporter = HOUSES.get(
+            unique_id
+        )
+
         if reporter is None:
             return False
-        reporter["state"]["motion"]["detected"] = True
-        _MOTION_TS[unique_id] = time.monotonic()
-        if not reporter["alarm_armed"]:
+
+        reporter[
+            "state"
+        ][
+            "motion"
+        ][
+            "detected"
+        ] = True
+
+        _MOTION_TS[
+            unique_id
+        ] = time.monotonic()
+
+        if not reporter[
+            "alarm_armed"
+        ]:
             return True
+
+        # Trigger every armed house.
         for house in HOUSES.values():
-            if house["alarm_armed"]:
-                house["alarm_triggered"] = True
+
+            if house[
+                "alarm_armed"
+            ]:
+
+                house[
+                    "alarm_triggered"
+                ] = True
+
         return True
 
 
-# ---------- messages (Day 5) ----------
+# ---------------------------------------------------------
+# Messages
+# ---------------------------------------------------------
 
-def send_message(to_uid: str, sender: str, text: str) -> bool:
-    """Leave a message in to_uid's mailbox. False if that house is unknown.
+def send_message(
+    to_uid: str,
+    sender: str,
+    text: str,
+) -> bool:
 
-    The keepalive of to_uid will then report message=True, so its board knows
-    to come and fetch. Keeps only the newest MAX_MESSAGES.
-    """
     with _LOCK:
+
         if to_uid not in HOUSES:
             return False
-        box = _MESSAGES.setdefault(to_uid, [])
-        box.append({"from": sender, "text": text, "time": now_str()})
+
+        box = _MESSAGES.setdefault(
+            to_uid,
+            [],
+        )
+
+        box.append(
+            {
+                "from": sender,
+                "text": text,
+                "time": now_str(),
+            }
+        )
+
         if len(box) > MAX_MESSAGES:
-            del box[0]                 # drop the oldest, keep the newest ones
+
+            del box[0]
+
         return True
 
 
-def get_messages(unique_id: str) -> list | None:
-    """Drain and return a house's mailbox -- emptying it (like get_state clears
-    its flag). None if the house is unknown, [] if the mailbox was empty."""
+def get_messages(
+    unique_id: str,
+) -> list | None:
+
     with _LOCK:
+
         if unique_id not in HOUSES:
             return None
-        return _MESSAGES.pop(unique_id, [])
+
+        return _MESSAGES.pop(
+            unique_id,
+            [],
+        )
 
 
-def delete(unique_id: str) -> bool:
+# ---------------------------------------------------------
+# Delete
+# ---------------------------------------------------------
+
+def delete(
+    unique_id: str,
+) -> bool:
+
     with _LOCK:
-        _MOTION_TS.pop(unique_id, None)
-        _MESSAGES.pop(unique_id, None)
-        return HOUSES.pop(unique_id, None) is not None
 
+        _MOTION_TS.pop(
+            unique_id,
+            None,
+        )
+
+        _MESSAGES.pop(
+            unique_id,
+            None,
+        )
+
+        return (
+            HOUSES.pop(
+                unique_id,
+                None,
+            )
+            is not None
+        )
+
+
+# ---------------------------------------------------------
+# Watchdog
+# ---------------------------------------------------------
 
 def mark_lost_if_stale() -> None:
-    """Watchdog: any active house with no recent keepalive becomes 'Lost'."""
-    cutoff = datetime.now() - timedelta(seconds=LOST_AFTER_S)
+
+    cutoff = (
+        datetime.now()
+        - timedelta(
+            seconds=LOST_AFTER_S
+        )
+    )
+
     with _LOCK:
+
         for house in HOUSES.values():
-            if house["status"] != "Active":
+
+            if house[
+                "status"
+            ] != "Active":
                 continue
-            last = datetime.strptime(house["last_seen"], "%Y-%m-%d %H:%M:%S")
+
+            last = datetime.strptime(
+                house[
+                    "last_seen"
+                ],
+                "%Y-%m-%d %H:%M:%S",
+            )
+
             if last < cutoff:
-                house["status"] = "Lost"
-                house["alarm_armed"] = False
-                house["alarm_triggered"] = False
-                house["state"]["buzzer"]["active"] = False
+
+                house[
+                    "status"
+                ] = "Lost"
+
+                house[
+                    "alarm_armed"
+                ] = False
+
+                house[
+                    "alarm_triggered"
+                ] = False
+
+                house[
+                    "state"
+                ][
+                    "buzzer"
+                ][
+                    "active"
+                ] = False
