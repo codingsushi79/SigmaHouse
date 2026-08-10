@@ -1,12 +1,12 @@
 """
-4x WS2812 RGB LED controller.
+SigmaHouse 4x WS2812 RGB controller.
 
-Physical layout:
+GPIO 13 -> WS2812 DIN
+
+Physical arrangement:
 
     0  1
     2  3
-
-GPIO13 -> WS2812 data input
 """
 
 from machine import Pin
@@ -42,11 +42,17 @@ class RGB:
 
         self._colors = [
             [0, 0, 0]
-            for _ in range(self._count)
+            for _ in range(
+                self._count
+            )
         ]
 
         self.off()
 
+
+    # =====================================================
+    # Internal
+    # =====================================================
 
     def _scale(self, value):
 
@@ -73,7 +79,9 @@ class RGB:
 
             else:
 
-                r, g, b = self._colors[index]
+                r, g, b = (
+                    self._colors[index]
+                )
 
                 color = (
                     self._scale(r),
@@ -81,12 +89,15 @@ class RGB:
                     self._scale(b),
                 )
 
-
             self._pixels[index] = color
 
 
         self._pixels.write()
 
+
+    # =====================================================
+    # On / Off
+    # =====================================================
 
     def on(self):
 
@@ -107,6 +118,10 @@ class RGB:
         return self._active
 
 
+    # =====================================================
+    # Brightness
+    # =====================================================
+
     def set_brightness(
         self,
         brightness,
@@ -122,6 +137,10 @@ class RGB:
 
         self._write()
 
+
+    # =====================================================
+    # Individual pixel
+    # =====================================================
 
     def set_pixel(
         self,
@@ -167,6 +186,10 @@ class RGB:
         return True
 
 
+    # =====================================================
+    # All pixels
+    # =====================================================
+
     def set_all(
         self,
         r,
@@ -207,9 +230,14 @@ class RGB:
         self._write()
 
 
+    # =====================================================
+    # State
+    # =====================================================
+
     def state(self):
 
         return {
+
             "active":
                 self._active,
 
