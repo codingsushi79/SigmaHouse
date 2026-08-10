@@ -1,18 +1,36 @@
-"""Digital steam / water sensor."""
+"""
+Digital steam sensor.
+
+GPIO HIGH = steam detected
+GPIO LOW  = clear
+"""
 
 from machine import Pin
 
 
-class SteamSensor:
-    def __init__(self, pin_num, active_level=1):
-        self._pin = Pin(pin_num, Pin.IN)
+class Steam:
 
-        self._active_level = active_level
+    def __init__(
+        self,
+        pin_num,
+    ):
 
-    def is_active(self):
-        return self._pin.value() == self._active_level
+        self._pin = Pin(
+            pin_num,
+            Pin.IN,
+        )
+
+
+    def is_detected(self):
+
+        return (
+            self._pin.value() == 1
+        )
+
 
     def state(self):
+
         return {
-            "detected": self.is_active()
+            "detected":
+                self.is_detected()
         }
