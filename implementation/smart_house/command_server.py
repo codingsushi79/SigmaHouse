@@ -1,11 +1,11 @@
-"""Simple authenticated TCP command terminal for SigmaHouse."""
+"""Authenticated TCP command terminal for SigmaHouse."""
+
 
 import socket
 import time
 
 
 class CommandServer:
-    """Small allow-listed command server for the ESP32."""
 
     def __init__(
         self,
@@ -13,6 +13,9 @@ class CommandServer:
         fan,
         buzzer,
         motion,
+        dht_sensor,
+        steam,
+        rgb,
         port=2222,
         password="CHANGE_ME",
     ):
@@ -21,16 +24,24 @@ class CommandServer:
         self.buzzer = buzzer
         self.motion = motion
 
+        self.dht_sensor = dht_sensor
+        self.steam = steam
+        self.rgb = rgb
+
         self.port = port
         self.password = password
 
         self.server = None
         self.client = None
+
         self.authenticated = False
         self.failed_attempts = 0
 
+    # ---------------------------------------------------------
+    # Server
+    # ---------------------------------------------------------
+
     def start(self):
-        """Start listening for TCP clients."""
 
         if self.server is not None:
             return
@@ -47,13 +58,14 @@ class CommandServer:
         )
 
         self.server.bind(
-            ("0.0.0.0", self.port)
+            (
+                "0.0.0.0",
+                self.port,
+            )
         )
 
         self.server.listen(1)
 
-        # Non-blocking is important because app_sync has
-        # its own main loop.
         self.server.setblocking(False)
 
         print(
@@ -62,22 +74,20 @@ class CommandServer:
         )
 
     def poll(self):
-        """Poll for new connections and commands.
-
-        This must be called regularly by the main firmware loop.
-        """
 
         if self.server is None:
             return
 
-        # ---------------------------------------------------------
-        # Accept a new client
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Accept client
+        # -----------------------------------------------------
 
         if self.client is None:
 
             try:
-                client, address = self.server.accept()
+                client, address = (
+                    self.server.accept()
+                )
 
             except OSError:
                 return
@@ -85,7 +95,9 @@ class CommandServer:
             client.setblocking(False)
 
             self.client = client
+
             self.authenticated = False
+
             self.failed_attempts = 0
 
             self._send(
@@ -101,12 +113,12 @@ class CommandServer:
 
             return
 
-        # ---------------------------------------------------------
-        # Receive data
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Receive
+        # -----------------------------------------------------
 
         try:
-            data = self.client.recv(128)
+            data = self.client.recv(256)
 
         except OSError:
             return
@@ -119,21 +131,25 @@ class CommandServer:
             command = data.decode().strip()
 
         except Exception:
-            self._send("ERROR Invalid input.\r\n")
+            self._send(
+                "ERROR Invalid input.\r\n"
+            )
+
             return
 
         if not command:
             return
 
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
         # Authentication
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
 
         if not self.authenticated:
 
             if command == self.password:
 
                 self.authenticated = True
+
                 self.failed_attempts = 0
 
                 self._send(
@@ -165,61 +181,84 @@ class CommandServer:
 
             return
 
-        # ---------------------------------------------------------
-        # Execute command
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Execute
+        # -----------------------------------------------------
 
-        response = self.execute(command)
+        response = self.execute(
+            command
+        )
 
         if response is None:
             response = ""
 
         self._send(
-            response +
-            "\r\n"
-            "sigma> "
+            response
+            + "\r\n"
+            + "sigma> "
         )
 
+    # ---------------------------------------------------------
+    # Command execution
+    # ---------------------------------------------------------
+
     def execute(self, command):
-        """Execute one allow-listed command."""
 
         parts = command.lower().split()
 
         if not parts:
             return ""
 
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
         # General
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
 
-        if parts[0] in ("help", "?"):
+        if parts[0] in (
+            "help",
+            "?",
+        ):
             return self.help()
 
-        if parts[0] in ("exit", "quit"):
-            self._send("Goodbye.\r\n")
+        if parts[0] in (
+            "exit",
+            "quit",
+        ):
+
+            self._send(
+                "Goodbye.\r\n"
+            )
+
             self.close_client()
+
             return None
 
         if parts[0] == "status":
             return self.status()
 
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
         # LED
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
 
-        if parts == ["led", "on"]:
-
+        if parts == [
+            "led",
+            "on",
+        ]:
             self.led.on()
 
             return "OK LED ON"
 
-        if parts == ["led", "off"]:
-
+        if parts == [
+            "led",
+            "off",
+        ]:
             self.led.off()
 
             return "OK LED OFF"
 
-        if parts == ["led", "toggle"]:
+        if parts == [
+            "led",
+            "toggle",
+        ]:
 
             if self.led.is_on():
                 self.led.off()
@@ -228,35 +267,41 @@ class CommandServer:
 
             return "OK LED TOGGLED"
 
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
         # Fan
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
 
-        if parts == ["fan", "on"]:
+        if parts == [
+            "fan",
+            "on",
+        ]:
 
             self.fan.on()
 
-            return "OK FAN ON"
+            return "OK FAN ON CLOCKWISE"
 
-        if parts == ["fan", "off"]:
+        if parts == [
+            "fan",
+            "off",
+        ]:
 
             self.fan.off()
 
             return "OK FAN OFF"
 
-        if parts == ["fan", "clockwise"]:
+        if parts == [
+            "fan",
+            "clockwise",
+        ]:
 
-            self.fan.on(True)
+            self.fan.on()
 
             return "OK FAN CLOCKWISE"
 
-        if parts == ["fan", "counterclockwise"]:
-
-            self.fan.on(False)
-
-            return "OK FAN COUNTERCLOCKWISE"
-
-        if parts == ["fan", "toggle"]:
+        if parts == [
+            "fan",
+            "toggle",
+        ]:
 
             if self.fan.is_on():
                 self.fan.off()
@@ -265,23 +310,41 @@ class CommandServer:
 
             return "OK FAN TOGGLED"
 
-        # ---------------------------------------------------------
-        # Buzzer
-        # ---------------------------------------------------------
+        if parts == [
+            "fan",
+            "counterclockwise",
+        ]:
 
-        if parts == ["buzzer", "on"]:
+            return (
+                "ERROR Fan is clockwise-only"
+            )
+
+        # -----------------------------------------------------
+        # Buzzer
+        # -----------------------------------------------------
+
+        if parts == [
+            "buzzer",
+            "on",
+        ]:
 
             self.buzzer.on()
 
             return "OK BUZZER ON"
 
-        if parts == ["buzzer", "off"]:
+        if parts == [
+            "buzzer",
+            "off",
+        ]:
 
             self.buzzer.off()
 
             return "OK BUZZER OFF"
 
-        if parts == ["buzzer", "toggle"]:
+        if parts == [
+            "buzzer",
+            "toggle",
+        ]:
 
             if self.buzzer.is_on():
                 self.buzzer.off()
@@ -290,11 +353,270 @@ class CommandServer:
 
             return "OK BUZZER TOGGLED"
 
-        # ---------------------------------------------------------
-        # Reset
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # RGB
+        # -----------------------------------------------------
 
-        if parts == ["reset"]:
+        if parts == [
+            "rgb",
+            "on",
+        ]:
+
+            self.rgb.on()
+
+            return "OK RGB ON"
+
+        if parts == [
+            "rgb",
+            "off",
+        ]:
+
+            self.rgb.off()
+
+            return "OK RGB OFF"
+
+        if parts == [
+            "rgb",
+            "toggle",
+        ]:
+
+            if self.rgb.is_on():
+                self.rgb.off()
+            else:
+                self.rgb.on()
+
+            return "OK RGB TOGGLED"
+
+        if parts == [
+            "rgb",
+            "red",
+        ]:
+
+            self.rgb.set_all(
+                255,
+                0,
+                0,
+            )
+
+            return "OK RGB RED"
+
+        if parts == [
+            "rgb",
+            "green",
+        ]:
+
+            self.rgb.set_all(
+                0,
+                255,
+                0,
+            )
+
+            return "OK RGB GREEN"
+
+        if parts == [
+            "rgb",
+            "blue",
+        ]:
+
+            self.rgb.set_all(
+                0,
+                0,
+                255,
+            )
+
+            return "OK RGB BLUE"
+
+        if parts == [
+            "rgb",
+            "white",
+        ]:
+
+            self.rgb.set_all(
+                255,
+                255,
+                255,
+            )
+
+            return "OK RGB WHITE"
+
+        if (
+            len(parts) == 5
+            and parts[0] == "rgb"
+            and parts[1] == "color"
+        ):
+
+            try:
+                r = int(parts[2])
+                g = int(parts[3])
+                b = int(parts[4])
+
+            except ValueError:
+                return (
+                    "ERROR RGB values must be numbers"
+                )
+
+            self.rgb.set_all(
+                r,
+                g,
+                b,
+            )
+
+            return (
+                "OK RGB COLOR {} {} {}".format(
+                    r,
+                    g,
+                    b,
+                )
+            )
+
+        if (
+            len(parts) == 6
+            and parts[0] == "rgb"
+            and parts[1] == "pixel"
+        ):
+
+            try:
+                index = int(parts[2])
+                r = int(parts[3])
+                g = int(parts[4])
+                b = int(parts[5])
+
+                self.rgb.set_pixel(
+                    index,
+                    r,
+                    g,
+                    b,
+                )
+
+            except ValueError:
+                return (
+                    "ERROR RGB values must be numbers"
+                )
+
+            except Exception as e:
+                return (
+                    "ERROR "
+                    + str(e)
+                )
+
+            return (
+                "OK RGB PIXEL {} = {},{},{}".format(
+                    index,
+                    r,
+                    g,
+                    b,
+                )
+            )
+
+        if (
+            len(parts) == 3
+            and parts[0] == "rgb"
+            and parts[1] == "brightness"
+        ):
+
+            try:
+                brightness = int(
+                    parts[2]
+                )
+
+                self.rgb.set_brightness(
+                    brightness
+                )
+
+            except ValueError:
+                return (
+                    "ERROR brightness must be 0-255"
+                )
+
+            return (
+                "OK RGB BRIGHTNESS {}".format(
+                    brightness
+                )
+            )
+
+        # -----------------------------------------------------
+        # Temperature / humidity
+        # -----------------------------------------------------
+
+        if parts == [
+            "temp"
+        ]:
+
+            self.dht_sensor.read()
+
+            c = self.dht_sensor.temperature_c()
+
+            f = self.dht_sensor.temperature_f()
+
+            if c is None:
+                return "ERROR Temperature unavailable"
+
+            return (
+                "TEMPERATURE: {:.1f} C / {:.1f} F"
+                .format(c, f)
+            )
+
+        if parts == [
+            "temperature"
+        ]:
+
+            return self.execute(
+                "temp"
+            )
+
+        if parts == [
+            "humidity"
+        ]:
+
+            self.dht_sensor.read()
+
+            humidity = (
+                self.dht_sensor.humidity()
+            )
+
+            if humidity is None:
+                return "ERROR Humidity unavailable"
+
+            return (
+                "HUMIDITY: {:.1f}%"
+                .format(humidity)
+            )
+
+        if parts == [
+            "environment"
+        ]:
+
+            self.dht_sensor.read()
+
+            return (
+                "TEMPERATURE: {} C / {} F\r\n"
+                "HUMIDITY: {}%"
+            ).format(
+                self.dht_sensor.temperature_c(),
+                self.dht_sensor.temperature_f(),
+                self.dht_sensor.humidity(),
+            )
+
+        # -----------------------------------------------------
+        # Steam
+        # -----------------------------------------------------
+
+        if parts == [
+            "steam"
+        ]:
+
+            if self.steam.is_active():
+                return "STEAM: DETECTED"
+
+            return "STEAM: CLEAR"
+
+        # -----------------------------------------------------
+        # Reset
+        # -----------------------------------------------------
+
+        if parts == [
+            "reset"
+        ]:
 
             self._send(
                 "RESETTING...\r\n"
@@ -314,35 +636,56 @@ class CommandServer:
             + ". Type 'help'."
         )
 
+    # ---------------------------------------------------------
+    # Help
+    # ---------------------------------------------------------
+
     def help(self):
-        """Return available commands."""
 
         return (
             "Available commands:\r\n"
             "\r\n"
-            "  help                       Show this help\r\n"
+            "  help                       Show help\r\n"
             "  status                     Show device status\r\n"
             "\r\n"
             "  led on                     Turn LED on\r\n"
             "  led off                    Turn LED off\r\n"
             "  led toggle                 Toggle LED\r\n"
             "\r\n"
-            "  fan on                     Turn fan on\r\n"
+            "  fan on                     Fan clockwise\r\n"
             "  fan off                    Turn fan off\r\n"
             "  fan clockwise              Fan clockwise\r\n"
-            "  fan counterclockwise       Fan counterclockwise\r\n"
             "  fan toggle                 Toggle fan\r\n"
             "\r\n"
             "  buzzer on                  Turn buzzer on\r\n"
             "  buzzer off                 Turn buzzer off\r\n"
             "  buzzer toggle              Toggle buzzer\r\n"
             "\r\n"
+            "  rgb on                     Turn RGB on\r\n"
+            "  rgb off                    Turn RGB off\r\n"
+            "  rgb toggle                 Toggle RGB\r\n"
+            "  rgb red                    All pixels red\r\n"
+            "  rgb green                  All pixels green\r\n"
+            "  rgb blue                   All pixels blue\r\n"
+            "  rgb white                  All pixels white\r\n"
+            "  rgb color R G B            Set all pixels\r\n"
+            "  rgb pixel N R G B          Set one pixel\r\n"
+            "  rgb brightness 0-255      Set brightness\r\n"
+            "\r\n"
+            "  temp                       Read temperature\r\n"
+            "  humidity                   Read humidity\r\n"
+            "  environment                Read both\r\n"
+            "  steam                      Read steam sensor\r\n"
+            "\r\n"
             "  reset                      Restart ESP32\r\n"
             "  exit                       Disconnect\r\n"
         )
 
+    # ---------------------------------------------------------
+    # Status
+    # ---------------------------------------------------------
+
     def status(self):
-        """Return current device state."""
 
         led = (
             "ON"
@@ -362,41 +705,75 @@ class CommandServer:
             else "OFF"
         )
 
+        rgb = (
+            "ON"
+            if self.rgb.is_on()
+            else "OFF"
+        )
+
         motion = (
-            "TRIGGERED"
-            if self.motion.was_triggered()
+            "ACTIVE"
+            if self.motion.is_active()
             else "CLEAR"
+        )
+
+        steam = (
+            "DETECTED"
+            if self.steam.is_active()
+            else "CLEAR"
+        )
+
+        self.dht_sensor.read()
+
+        temperature = (
+            self.dht_sensor.temperature_c()
+        )
+
+        humidity = (
+            self.dht_sensor.humidity()
         )
 
         return (
             "STATUS\r\n"
-            "  LED:    {}\r\n"
-            "  FAN:    {}\r\n"
-            "  BUZZER: {}\r\n"
-            "  MOTION: {}"
+            "  LED:         {}\r\n"
+            "  FAN:         {} CLOCKWISE\r\n"
+            "  BUZZER:      {}\r\n"
+            "  RGB:         {}\r\n"
+            "  MOTION:      {}\r\n"
+            "  STEAM:       {}\r\n"
+            "  TEMPERATURE: {}\r\n"
+            "  HUMIDITY:    {}"
         ).format(
             led,
             fan,
             buzzer,
+            rgb,
             motion,
+            steam,
+            temperature,
+            humidity,
         )
 
+    # ---------------------------------------------------------
+    # Socket helpers
+    # ---------------------------------------------------------
+
     def _send(self, message):
-        """Send data to the connected client."""
 
         if self.client is None:
             return
 
         try:
+
             self.client.send(
                 message.encode()
             )
 
         except OSError:
+
             self.close_client()
 
     def close_client(self):
-        """Close the current client."""
 
         if self.client is not None:
 
@@ -407,11 +784,12 @@ class CommandServer:
                 pass
 
         self.client = None
+
         self.authenticated = False
+
         self.failed_attempts = 0
 
     def close(self):
-        """Shut down the command server."""
 
         self.close_client()
 
