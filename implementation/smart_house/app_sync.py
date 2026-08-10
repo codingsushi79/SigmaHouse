@@ -12,12 +12,8 @@ GPIO 23 -> normal LED
 
 Buttons:
 
-Button A -> GPIO 26 -> cycles local menu
-Button B -> GPIO 25 -> activates/toggles selected item
-
-Local menu:
-
-LED -> FAN -> BUZZER -> LED
+Button A -> local menu selection
+Button B -> activate selected item
 """
 
 import time
@@ -38,7 +34,9 @@ from devices.fan import Fan
 from devices.buzzer import Buzzer
 from devices.lcd import LCD
 from devices.rgb import RGB
-from devices.temperature_humidity import TemperatureHumidity
+from devices.temperature_humidity import (
+    TemperatureHumidity,
+)
 from devices.steam import Steam
 from devices.safe import safe
 
@@ -178,7 +176,120 @@ def connect_wifi(lcd):
 
 
 # =========================================================
-# Startup hardware test
+# RGB startup test
+#
+# Physical layout:
+#
+#       [ 0 ] [ 1 ]
+#       [ 2 ] [ 3 ]
+#
+# Each step rotates the four colors.
+#
+# Step 1:
+#       WHITE RED
+#       GREEN BLUE
+#
+# Step 2:
+#       RED GREEN
+#       BLUE WHITE
+#
+# Step 3:
+#       GREEN BLUE
+#       WHITE RED
+#
+# Step 4:
+#       BLUE WHITE
+#       RED GREEN
+#
+# Every pixel therefore receives:
+# WHITE -> RED -> GREEN -> BLUE
+#
+# =========================================================
+
+def rgb_startup_test(
+    lcd,
+    rgb,
+):
+
+    print()
+    print(
+        "Testing RGB LEDs..."
+    )
+
+    lcd_show(
+        lcd,
+        "RGB TEST",
+        "Rotation 1/4",
+    )
+
+    colors = (
+        (255, 255, 255),  # WHITE
+        (255, 0, 0),      # RED
+        (0, 255, 0),      # GREEN
+        (0, 0, 255),      # BLUE
+    )
+
+    try:
+
+        rgb.set_brightness(
+            255
+        )
+
+        for rotation in range(4):
+
+            print(
+                "RGB rotation",
+                rotation + 1,
+                "/ 4",
+            )
+
+            lcd_show(
+                lcd,
+                "RGB TEST",
+                "Rotation {}/4".format(
+                    rotation + 1
+                ),
+            )
+
+            for pixel in range(4):
+
+                color = colors[
+                    (
+                        pixel
+                        + rotation
+                    ) % 4
+                ]
+
+                rgb.set_pixel(
+                    pixel,
+                    color[0],
+                    color[1],
+                    color[2],
+                )
+
+            time.sleep_ms(500)
+
+        rgb.off()
+
+    except Exception as error:
+
+        print(
+            "RGB test error:",
+            error,
+        )
+
+        try:
+
+            rgb.off()
+
+        except Exception:
+            pass
+
+    time.sleep_ms(300)
+
+
+# =========================================================
+# Hardware startup test
 # =========================================================
 
 def hardware_self_test(
@@ -193,9 +304,15 @@ def hardware_self_test(
 ):
 
     print()
-    print("================================")
-    print(" SigmaHouse hardware self-test")
-    print("================================")
+    print(
+        "================================"
+    )
+    print(
+        " SigmaHouse hardware self-test"
+    )
+    print(
+        "================================"
+    )
     print()
 
     lcd_show(
@@ -210,139 +327,10 @@ def hardware_self_test(
     # RGB
     # =====================================================
 
-    print(
-        "Testing RGB LEDs..."
-    )
-
-    # Pixel 0 = WHITE
-
-    lcd_show(
+    rgb_startup_test(
         lcd,
-        "Testing RGB",
-        "Pixel 1/4",
+        rgb,
     )
-
-    try:
-
-        rgb.off()
-
-        rgb.set_pixel(
-            0,
-            255,
-            255,
-            255,
-        )
-
-        rgb.set_pixel(
-            1,
-            0,
-            0,
-            0,
-        )
-
-        rgb.set_pixel(
-            2,
-            0,
-            0,
-            0,
-        )
-
-        rgb.set_pixel(
-            3,
-            0,
-            0,
-            0,
-        )
-
-        time.sleep_ms(500)
-
-        # Pixel 1 = RED
-
-        lcd_show(
-            lcd,
-            "Testing RGB",
-            "Pixel 2/4",
-        )
-
-        rgb.set_pixel(
-            0,
-            0,
-            0,
-            0,
-        )
-
-        rgb.set_pixel(
-            1,
-            255,
-            0,
-            0,
-        )
-
-        time.sleep_ms(500)
-
-        # Pixel 2 = GREEN
-
-        lcd_show(
-            lcd,
-            "Testing RGB",
-            "Pixel 3/4",
-        )
-
-        rgb.set_pixel(
-            1,
-            0,
-            0,
-            0,
-        )
-
-        rgb.set_pixel(
-            2,
-            0,
-            255,
-            0,
-        )
-
-        time.sleep_ms(500)
-
-        # Pixel 3 = BLUE
-
-        lcd_show(
-            lcd,
-            "Testing RGB",
-            "Pixel 4/4",
-        )
-
-        rgb.set_pixel(
-            2,
-            0,
-            0,
-            0,
-        )
-
-        rgb.set_pixel(
-            3,
-            0,
-            0,
-            255,
-        )
-
-        time.sleep_ms(500)
-
-        rgb.off()
-
-    except Exception as error:
-
-        print(
-            "RGB test error:",
-            error,
-        )
-
-        try:
-            rgb.off()
-        except Exception:
-            pass
-
-    time.sleep_ms(300)
 
     # =====================================================
     # MAIN LED
@@ -372,6 +360,11 @@ def hardware_self_test(
             "LED test error:",
             error,
         )
+
+        try:
+            led.off()
+        except Exception:
+            pass
 
     time.sleep_ms(300)
 
@@ -461,7 +454,7 @@ def hardware_self_test(
     time.sleep_ms(300)
 
     # =====================================================
-    # DHT11
+    # TEMPERATURE / HUMIDITY
     # =====================================================
 
     print(
@@ -476,27 +469,44 @@ def hardware_self_test(
 
     try:
 
-        if environment.read():
+        result = environment.read()
+
+        if result:
 
             state = environment.state()
 
+            temperature = state.get(
+                "temperature_c",
+                "?",
+            )
+
+            humidity = state.get(
+                "humidity",
+                "?",
+            )
+
             print(
-                "DHT11 OK:",
-                state,
+                "DHT11 OK"
+            )
+
+            print(
+                "Temperature:",
+                temperature,
+                "C",
+            )
+
+            print(
+                "Humidity:",
+                humidity,
+                "%",
             )
 
             lcd_show(
                 lcd,
                 "DHT11 OK",
                 "{}C {}%".format(
-                    state.get(
-                        "temperature_c",
-                        "?",
-                    ),
-                    state.get(
-                        "humidity",
-                        "?",
-                    ),
+                    temperature,
+                    humidity,
                 ),
             )
 
@@ -543,9 +553,13 @@ def hardware_self_test(
 
     try:
 
+        motion_state = (
+            motion.state()
+        )
+
         print(
             "Motion:",
-            motion.state(),
+            motion_state,
         )
 
     except Exception as error:
@@ -573,9 +587,13 @@ def hardware_self_test(
 
     try:
 
+        steam_state = (
+            steam.state()
+        )
+
         print(
             "Steam:",
-            steam.state(),
+            steam_state,
         )
 
     except Exception as error:
@@ -588,8 +606,12 @@ def hardware_self_test(
     time.sleep_ms(500)
 
     # =====================================================
-    # EVERYTHING OFF
+    # FINAL SAFE STATE
     # =====================================================
+
+    print(
+        "Turning outputs off..."
+    )
 
     try:
         rgb.off()
@@ -612,9 +634,15 @@ def hardware_self_test(
         pass
 
     print()
-    print("================================")
-    print(" Hardware self-test complete")
-    print("================================")
+    print(
+        "================================"
+    )
+    print(
+        " Hardware self-test complete"
+    )
+    print(
+        "================================"
+    )
     print()
 
     lcd_show(
@@ -641,32 +669,18 @@ def build_state(
 ):
 
     return {
-
-        "led":
-            led.state(),
-
-        "fan":
-            fan.state(),
-
-        "buzzer":
-            buzzer.state(),
-
-        "rgb":
-            rgb.state(),
-
-        "motion":
-            motion.state(),
-
-        "steam":
-            steam.state(),
-
-        "environment":
-            environment.state(),
+        "led": led.state(),
+        "fan": fan.state(),
+        "buzzer": buzzer.state(),
+        "rgb": rgb.state(),
+        "motion": motion.state(),
+        "steam": steam.state(),
+        "environment": environment.state(),
     }
 
 
 # =========================================================
-# Apply hub state
+# Apply remote state
 # =========================================================
 
 def apply_state(
@@ -826,6 +840,40 @@ MENU_ITEMS = (
 )
 
 
+def menu_state(
+    selected,
+    led,
+    fan,
+    buzzer,
+):
+
+    if selected == "LED":
+
+        return (
+            "ON"
+            if led.is_on()
+            else "OFF"
+        )
+
+    if selected == "FAN":
+
+        return (
+            "ON"
+            if fan.is_on()
+            else "OFF"
+        )
+
+    if selected == "BUZZER":
+
+        return (
+            "ON"
+            if buzzer.is_on()
+            else "OFF"
+        )
+
+    return "OFF"
+
+
 def show_menu(
     lcd,
     menu_index,
@@ -838,29 +886,12 @@ def show_menu(
         menu_index
     ]
 
-    if selected == "LED":
-
-        state = (
-            "ON"
-            if led.is_on()
-            else "OFF"
-        )
-
-    elif selected == "FAN":
-
-        state = (
-            "ON"
-            if fan.is_on()
-            else "OFF"
-        )
-
-    else:
-
-        state = (
-            "ON"
-            if buzzer.is_on()
-            else "OFF"
-        )
+    state = menu_state(
+        selected,
+        led,
+        fan,
+        buzzer,
+    )
 
     lcd_show(
         lcd,
@@ -875,132 +906,49 @@ def show_menu(
     )
 
 
-def handle_local_menu(
-    lcd,
-    button_a,
-    button_b,
+def toggle_menu_item(
     menu_index,
     led,
     fan,
     buzzer,
-    hub,
-    rgb,
-    motion,
-    steam,
-    environment,
 ):
 
-    changed = False
+    selected = MENU_ITEMS[
+        menu_index
+    ]
 
-    # -----------------------------------------------------
-    # Button A
-    # -----------------------------------------------------
+    if selected == "LED":
 
-    if button_a.was_pressed():
+        if led.is_on():
 
-        menu_index = (
-            menu_index + 1
-        ) % len(MENU_ITEMS)
+            led.off()
 
-        print(
-            "Button A:",
-            MENU_ITEMS[menu_index],
-        )
+        else:
 
-        show_menu(
-            lcd,
-            menu_index,
-            led,
-            fan,
-            buzzer,
-        )
+            led.on()
 
-        changed = True
+    elif selected == "FAN":
 
-    # -----------------------------------------------------
-    # Button B
-    # -----------------------------------------------------
+        if fan.is_on():
 
-    if button_b.was_pressed():
+            fan.off()
 
-        selected = MENU_ITEMS[
-            menu_index
-        ]
+        else:
 
-        print(
-            "Button B:",
-            selected,
-        )
+            # Clockwise-only fan.
+            fan.on()
 
-        if selected == "LED":
+    elif selected == "BUZZER":
 
-            if led.is_on():
+        if buzzer.is_on():
 
-                led.off()
+            buzzer.off()
 
-            else:
+        else:
 
-                led.on()
+            buzzer.on()
 
-        elif selected == "FAN":
-
-            if fan.is_on():
-
-                fan.off()
-
-            else:
-
-                # Fan is clockwise-only.
-                fan.on()
-
-        elif selected == "BUZZER":
-
-            if buzzer.is_on():
-
-                buzzer.off()
-
-            else:
-
-                buzzer.on()
-
-        show_menu(
-            lcd,
-            menu_index,
-            led,
-            fan,
-            buzzer,
-        )
-
-        changed = True
-
-    # -----------------------------------------------------
-    # Push local changes to hub
-    # -----------------------------------------------------
-
-    if changed:
-
-        try:
-
-            hub.push_state(
-                build_state(
-                    led,
-                    fan,
-                    buzzer,
-                    rgb,
-                    motion,
-                    steam,
-                    environment,
-                )
-            )
-
-        except Exception as error:
-
-            print(
-                "Menu state push error:",
-                error,
-            )
-
-    return menu_index
+    return selected
 
 
 # =========================================================
@@ -1080,7 +1028,6 @@ def run():
         lambda: RGB(
             config.PIN_RGB,
             config.RGB_COUNT,
-            config.RGB_BRIGHTNESS,
         ),
         "RGB",
     )
@@ -1101,7 +1048,7 @@ def run():
     )
 
     # =====================================================
-    # Startup hardware test
+    # Hardware test
     # =====================================================
 
     hardware_self_test(
@@ -1207,7 +1154,7 @@ def run():
             command_server = None
 
     # =====================================================
-    # Initial sensor reading
+    # Initial DHT reading
     # =====================================================
 
     try:
@@ -1222,7 +1169,7 @@ def run():
         )
 
     # =====================================================
-    # Initial hub state
+    # Initial state
     # =====================================================
 
     try:
@@ -1298,30 +1245,97 @@ def run():
                     )
 
             # -------------------------------------------------
-            # Local buttons
+            # BUTTON A
+            #
+            # Cycle:
+            #
+            # LED -> FAN -> BUZZER -> LED
             # -------------------------------------------------
 
             try:
 
-                menu_index = handle_local_menu(
-                    lcd,
-                    button_a,
-                    button_b,
-                    menu_index,
-                    led,
-                    fan,
-                    buzzer,
-                    hub,
-                    rgb,
-                    motion,
-                    steam,
-                    environment,
-                )
+                if button_a.was_pressed():
+
+                    menu_index = (
+                        menu_index + 1
+                    ) % len(MENU_ITEMS)
+
+                    print(
+                        "Button A pressed"
+                    )
+
+                    show_menu(
+                        lcd,
+                        menu_index,
+                        led,
+                        fan,
+                        buzzer,
+                    )
 
             except Exception as error:
 
                 print(
-                    "Local menu error:",
+                    "Button A error:",
+                    error,
+                )
+
+            # -------------------------------------------------
+            # BUTTON B
+            #
+            # Toggle selected item.
+            # -------------------------------------------------
+
+            try:
+
+                if button_b.was_pressed():
+
+                    selected = (
+                        toggle_menu_item(
+                            menu_index,
+                            led,
+                            fan,
+                            buzzer,
+                        )
+                    )
+
+                    print(
+                        "Button B:",
+                        selected,
+                    )
+
+                    show_menu(
+                        lcd,
+                        menu_index,
+                        led,
+                        fan,
+                        buzzer,
+                    )
+
+                    try:
+
+                        hub.push_state(
+                            build_state(
+                                led,
+                                fan,
+                                buzzer,
+                                rgb,
+                                motion,
+                                steam,
+                                environment,
+                            )
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            "Local state push error:",
+                            error,
+                        )
+
+            except Exception as error:
+
+                print(
+                    "Button B error:",
                     error,
                 )
 
@@ -1464,8 +1478,8 @@ def run():
                                     rgb,
                                 )
 
-                                # Restore local menu display
-                                # after remote state updates.
+                                # Keep the local menu visible
+                                # after remote changes.
 
                                 show_menu(
                                     lcd,
