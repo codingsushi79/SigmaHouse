@@ -1,32 +1,409 @@
 <!doctype html>
+
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Sigma Camp IoT Hub</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-  </head>
-  <body>
-    <h1>Smart Houses</h1>
-    <p id="empty">Waiting for houses to register...</p>
 
-    <table id="houses" hidden>
-      <thead>
-        <tr>
-          <th>House ID</th>
-          <th>IP</th>
-          <th>Status</th>
-          <th>Alarm</th>
-          <th>LED</th>
-          <th>Fan</th>
-          <th>Buzzer</th>
-          <th>Motion</th>
-          <th>Msg</th>
-          <th>Last Seen</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+<head>
 
-    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
-  </body>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>SigmaHouse</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+
+</head>
+
+
+<body>
+
+    <header class="topbar">
+
+        <div>
+
+            <div class="brand">
+                SIGMAHOUSE
+            </div>
+
+            <div class="subtitle">
+                IoT Control Center
+            </div>
+
+        </div>
+
+        <div
+            id="connection"
+            class="connection"
+        >
+            Connecting...
+        </div>
+
+    </header>
+
+
+    <main>
+
+        <div
+            id="empty"
+            class="empty"
+        >
+            Waiting for houses to register...
+        </div>
+
+
+        <section
+            id="houses"
+            class="houses"
+        ></section>
+
+    </main>
+
+
+    <template id="house-template">
+
+        <article class="house-card">
+
+            <!-- ----------------------------------------- -->
+            <!-- Header -->
+            <!-- ----------------------------------------- -->
+
+            <div class="house-header">
+
+                <div>
+
+                    <h2 class="house-id"></h2>
+
+                    <div class="house-meta">
+
+                        <span class="house-ip"></span>
+
+                        <span class="dot">
+                            •
+                        </span>
+
+                        <span class="house-last-seen"></span>
+
+                    </div>
+
+                </div>
+
+
+                <div class="status-badge">
+                </div>
+
+            </div>
+
+
+            <!-- ----------------------------------------- -->
+            <!-- Sensors -->
+            <!-- ----------------------------------------- -->
+
+            <div class="section-title">
+                ENVIRONMENT
+            </div>
+
+
+            <div class="sensor-grid">
+
+
+                <div class="sensor-card">
+
+                    <div class="sensor-icon">
+                        🌡️
+                    </div>
+
+                    <div class="sensor-label">
+                        Temperature
+                    </div>
+
+                    <div class="sensor-value temperature">
+                        --
+                    </div>
+
+                </div>
+
+
+                <div class="sensor-card">
+
+                    <div class="sensor-icon">
+                        💧
+                    </div>
+
+                    <div class="sensor-label">
+                        Humidity
+                    </div>
+
+                    <div class="sensor-value humidity">
+                        --
+                    </div>
+
+                </div>
+
+
+                <div class="sensor-card">
+
+                    <div class="sensor-icon">
+                        💨
+                    </div>
+
+                    <div class="sensor-label">
+                        Steam
+                    </div>
+
+                    <div class="sensor-value steam">
+                        --
+                    </div>
+
+                </div>
+
+
+                <div class="sensor-card">
+
+                    <div class="sensor-icon">
+                        👋
+                    </div>
+
+                    <div class="sensor-label">
+                        Motion
+                    </div>
+
+                    <div class="sensor-value motion">
+                        --
+                    </div>
+
+                </div>
+
+
+            </div>
+
+
+            <!-- ----------------------------------------- -->
+            <!-- Controls -->
+            <!-- ----------------------------------------- -->
+
+            <div class="section-title">
+                CONTROLS
+            </div>
+
+
+            <div class="controls">
+
+
+                <button
+                    class="device-button led"
+                >
+
+                    <span class="device-icon">
+                        💡
+                    </span>
+
+                    <span class="device-name">
+                        LED
+                    </span>
+
+                    <span class="device-state">
+                    </span>
+
+                </button>
+
+
+                <button
+                    class="device-button fan"
+                >
+
+                    <span class="device-icon">
+                        🌀
+                    </span>
+
+                    <span class="device-name">
+                        Fan
+                    </span>
+
+                    <span class="device-state">
+                    </span>
+
+                </button>
+
+
+                <button
+                    class="device-button buzzer"
+                >
+
+                    <span class="device-icon">
+                        🔊
+                    </span>
+
+                    <span class="device-name">
+                        Buzzer
+                    </span>
+
+                    <span class="device-state">
+                    </span>
+
+                </button>
+
+
+                <button
+                    class="device-button rgb"
+                >
+
+                    <span class="device-icon">
+                        🌈
+                    </span>
+
+                    <span class="device-name">
+                        RGB
+                    </span>
+
+                    <span class="device-state">
+                    </span>
+
+                </button>
+
+
+            </div>
+
+
+            <!-- ----------------------------------------- -->
+            <!-- RGB -->
+            <!-- ----------------------------------------- -->
+
+            <div class="section-title">
+                RGB LIGHTING
+            </div>
+
+
+            <div class="rgb-panel">
+
+
+                <div class="rgb-preview">
+                </div>
+
+
+                <div class="rgb-controls">
+
+                    <label>
+
+                        Color
+
+                        <input
+                            type="color"
+                            class="rgb-color"
+                            value="#ffffff"
+                        >
+
+                    </label>
+
+
+                    <label>
+
+                        Brightness
+
+                        <input
+                            type="range"
+                            class="rgb-brightness"
+                            min="0"
+                            max="255"
+                            value="80"
+                        >
+
+                    </label>
+
+
+                    <div class="rgb-presets">
+
+                        <button data-color="#ff0000">
+                            Red
+                        </button>
+
+                        <button data-color="#00ff00">
+                            Green
+                        </button>
+
+                        <button data-color="#0000ff">
+                            Blue
+                        </button>
+
+                        <button data-color="#ffffff">
+                            White
+                        </button>
+
+                        <button data-color="#ff00ff">
+                            Purple
+                        </button>
+
+                        <button data-color="#00ffff">
+                            Cyan
+                        </button>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- ----------------------------------------- -->
+            <!-- Alarm -->
+            <!-- ----------------------------------------- -->
+
+            <div class="section-title">
+                SECURITY
+            </div>
+
+
+            <div class="security-row">
+
+
+                <button
+                    class="alarm-button"
+                >
+                    Disarmed
+                </button>
+
+
+                <div class="alarm-state">
+                </div>
+
+
+            </div>
+
+
+            <!-- ----------------------------------------- -->
+            <!-- Messaging -->
+            <!-- ----------------------------------------- -->
+
+            <div class="section-title">
+                COMMUNICATION
+            </div>
+
+
+            <div class="message-row">
+
+                <button
+                    class="message-button"
+                >
+                    Send Message
+                </button>
+
+            </div>
+
+
+        </article>
+
+    </template>
+
+
+    <script
+        src="{{ url_for('static', filename='dashboard.js') }}"
+    ></script>
+
+</body>
+
 </html>
