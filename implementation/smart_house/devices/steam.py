@@ -1,9 +1,10 @@
 """
 Digital steam sensor.
 
-GPIO HIGH = steam detected
-GPIO LOW  = clear
+GPIO HIGH = detected by default.
+GPIO LOW  = clear.
 """
+
 
 from machine import Pin
 
@@ -13,6 +14,7 @@ class Steam:
     def __init__(
         self,
         pin_num,
+        active_level=1,
     ):
 
         self._pin = Pin(
@@ -20,11 +22,16 @@ class Steam:
             Pin.IN,
         )
 
+        self._active_level = (
+            int(active_level)
+        )
+
 
     def is_detected(self):
 
         return (
-            self._pin.value() == 1
+            self._pin.value()
+            == self._active_level
         )
 
 
