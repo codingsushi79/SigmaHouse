@@ -1,5 +1,14 @@
 """
 SigmaHouse synchronous application.
+
+Hardware:
+
+GPIO 5  -> steam sensor
+GPIO 12 -> PIR motion sensor
+GPIO 13 -> 4x WS2812 RGB
+GPIO 18 -> DHT11
+GPIO 19 -> clockwise-only fan
+GPIO 23 -> normal LED
 """
 
 import time
@@ -27,13 +36,9 @@ from devices.steam import Steam
 from devices.safe import safe
 
 
-DEVICES = (
-    "led",
-    "fan",
-    "buzzer",
-    "rgb",
-)
-
+# =========================================================
+# LCD
+# =========================================================
 
 def lcd_show(
     lcd,
@@ -87,15 +92,15 @@ def connect_wifi(lcd):
         return ip
 
 
-    lcd_show(
-        lcd,
-        "Connecting WiFi",
+    print(
+        "Connecting to WiFi:",
         config.WIFI_SSID,
     )
 
 
-    print(
-        "Connecting to:",
+    lcd_show(
+        lcd,
+        "Connecting WiFi",
         config.WIFI_SSID,
     )
 
@@ -132,8 +137,9 @@ def connect_wifi(lcd):
         ):
 
             print(
-                "WiFi connection timeout"
+                "WiFi timeout - retrying"
             )
+
 
             lcd_show(
                 lcd,
@@ -141,16 +147,8 @@ def connect_wifi(lcd):
                 "Retrying...",
             )
 
-            time.sleep_ms(1000)
 
             start = time.ticks_ms()
-
-            try:
-
-                wlan.disconnect()
-
-            except Exception:
-                pass
 
 
             try:
@@ -226,7 +224,7 @@ def build_state(
 
 
 # =========================================================
-# Remote state
+# Apply remote state
 # =========================================================
 
 def apply_state(
@@ -237,7 +235,9 @@ def apply_state(
     rgb,
 ):
 
+    # -----------------------------------------------------
     # LED
+    # -----------------------------------------------------
 
     led_state = state.get(
         "led",
@@ -257,7 +257,9 @@ def apply_state(
         led.off()
 
 
+    # -----------------------------------------------------
     # Fan
+    # -----------------------------------------------------
 
     fan_state = state.get(
         "fan",
@@ -277,7 +279,9 @@ def apply_state(
         fan.off()
 
 
+    # -----------------------------------------------------
     # Buzzer
+    # -----------------------------------------------------
 
     buzzer_state = state.get(
         "buzzer",
@@ -297,7 +301,9 @@ def apply_state(
         buzzer.off()
 
 
+    # -----------------------------------------------------
     # RGB
+    # -----------------------------------------------------
 
     rgb_state = state.get(
         "rgb",
@@ -390,7 +396,7 @@ def run():
 
 
     # -----------------------------------------------------
-    # Hardware
+    # Devices
     # -----------------------------------------------------
 
     led = safe(
@@ -478,7 +484,7 @@ def run():
 
 
     # -----------------------------------------------------
-    # ID
+    # House ID
     # -----------------------------------------------------
 
     uid = (
@@ -554,9 +560,10 @@ def run():
 
 
             print(
-                "Command server started:",
+                "Command server started on port",
                 config.COMMAND_SERVER_PORT,
             )
+
 
         except Exception as error:
 
@@ -564,6 +571,9 @@ def run():
                 "WARNING: Command server failed:",
                 error,
             )
+
+
+            command_server = None
 
 
     # -----------------------------------------------------
@@ -655,6 +665,42 @@ def run():
 
 
             # ---------------------------------------------
+            # Buttons
+            # ---------------------------------------------
+
+            try:
+
+                if button_a.was_pressed():
+
+                    print(
+                        "Button A pressed"
+                    )
+
+            except Exception as error:
+
+                print(
+                    "Button A error:",
+                    error,
+                )
+
+
+            try:
+
+                if button_b.was_pressed():
+
+                    print(
+                        "Button B pressed"
+                    )
+
+            except Exception as error:
+
+                print(
+                    "Button B error:",
+                    error,
+                )
+
+
+            # ---------------------------------------------
             # Motion
             # ---------------------------------------------
 
@@ -725,7 +771,7 @@ def run():
 
 
             # ---------------------------------------------
-            # Keepalive
+            # Hub keepalive
             # ---------------------------------------------
 
             if time.ticks_diff(
