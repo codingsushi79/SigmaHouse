@@ -18,10 +18,6 @@ UPDATE_INTERVAL_MS = 1000
 WIFI_TIMEOUT_S = 15
 SENSOR_INTERVAL_MS = 2000
 
-# Boot animation while WiFi connects.
-BOOT_ANIMATION_DELAY_MS = 180
-BOOT_WIFI_TIMEOUT_MS = WIFI_TIMEOUT_S * 1000
-
 
 # =========================================================
 # Messaging
@@ -35,7 +31,7 @@ MESSAGE_TEXT = "HELLO FROM MY HOUSE"
 
 
 # =========================================================
-# Network command terminal
+# Command server
 # =========================================================
 
 COMMAND_SERVER_ENABLED = True
@@ -58,17 +54,14 @@ PIN_BUTTON_A = 26
 PIN_BUTTON_B = 25
 
 
-# PIR motion sensor
+# Motion / PIR
 PIN_PIR = 12
 
 
 # Fan
-#
-# GPIO 19:
-#   HIGH = fan ON / clockwise
-#   LOW  = fan OFF
-#
-# There is deliberately no reverse direction.
+# GPIO 19 is the single control output.
+# HIGH = ON / clockwise
+# LOW = OFF
 PIN_FAN = 19
 
 
@@ -79,24 +72,31 @@ PIN_BUZZER = 4
 # Temperature / humidity
 PIN_DHT = 18
 
-# Compatibility alias for existing code.
+# Compatibility with existing code
 PIN_TEMP_HUMIDITY = PIN_DHT
 
 
 # Steam sensor
 PIN_STEAM = 5
 
+STEAM_ACTIVE_LEVEL = 1
 
-# WS2812 / NeoPixel data
+
+# =========================================================
+# RGB / WS2812
+# =========================================================
+
+# WS2812 data input
 PIN_RGB = 13
 
-# Four LEDs in a 2x2 physical arrangement:
+# Four LEDs
+RGB_COUNT = 4
+
+# Physical arrangement:
 #
 #   0  1
 #   2  3
 #
-RGB_COUNT = 4
-
 RGB_LAYOUT = "row-major"
 
 RGB_DEFAULT_R = 0
@@ -114,19 +114,10 @@ DHT_TYPE = "DHT11"
 
 
 # =========================================================
-# Steam
-# =========================================================
-
-# HIGH means steam detected.
-STEAM_ACTIVE_LEVEL = 1
-
-
-# =========================================================
 # Fan
 # =========================================================
 
 FAN_PWM_FREQ = 1000
-
 FAN_PWM_DUTY = 512
 
 
