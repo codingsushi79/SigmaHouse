@@ -1,46 +1,885 @@
+* {
+    box-sizing: border-box;
+}
+
+
 body {
-  font-family: system-ui, sans-serif;
-  margin: 2em;
-  background: #fafafa;
+    margin: 0;
+
+    min-height: 100vh;
+
+    font-family:
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    background:
+        #0b0f14;
+
+    color:
+        #f4f7fa;
 }
 
-h1 {
-  margin-bottom: 0.5em;
+
+/* ---------------------------------------------------------
+   Header
+   --------------------------------------------------------- */
+
+.topbar {
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: space-between;
+
+    gap: 20px;
+
+    padding:
+        24px 32px;
+
+    border-bottom:
+        1px solid #222b35;
+
+    background:
+        #10161d;
 }
 
-#empty {
-  color: #888;
-  font-style: italic;
+
+.brand {
+
+    font-size: 24px;
+
+    font-weight: 800;
+
+    letter-spacing:
+        0.12em;
 }
 
-table {
-  border-collapse: collapse;
-  width: 100%;
-  background: white;
+
+.subtitle {
+
+    margin-top: 4px;
+
+    color:
+        #84909d;
+
+    font-size: 13px;
 }
 
-th, td {
-  border: 1px solid #ccc;
-  padding: 0.5em 0.75em;
-  text-align: left;
+
+.connection {
+
+    padding:
+        7px 12px;
+
+    border-radius:
+        999px;
+
+    font-size:
+        13px;
+
+    background:
+        #202832;
+
+    color:
+        #aab4bf;
 }
 
-th {
-  background: #eee;
+
+.connection.online {
+
+    color:
+        #63e6be;
+
+    background:
+        rgba(
+            50,
+            180,
+            120,
+            0.12
+        );
 }
 
-button {
-  cursor: pointer;
-  padding: 0.3em 0.6em;
-  border: 1px solid #888;
-  background: white;
-  border-radius: 4px;
+
+.connection.offline {
+
+    color:
+        #ff8787;
+
+    background:
+        rgba(
+            255,
+            80,
+            80,
+            0.12
+        );
 }
 
-button:hover {
-  background: #f0f0f0;
+
+/* ---------------------------------------------------------
+   Main
+   --------------------------------------------------------- */
+
+main {
+
+    width:
+        min(
+            1400px,
+            calc(
+                100% - 40px
+            )
+        );
+
+    margin:
+        30px auto;
 }
 
-.green  { background: #c8f7c5; }
-.yellow { background: #fff4b3; }
-.red    { background: #f7c5c5; }
+
+.empty {
+
+    padding:
+        80px 20px;
+
+    text-align:
+        center;
+
+    color:
+        #697582;
+
+    border:
+        1px dashed #303b46;
+
+    border-radius:
+        16px;
+}
+
+
+/* ---------------------------------------------------------
+   Houses
+   --------------------------------------------------------- */
+
+.houses {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(
+                500px,
+                1fr
+            )
+        );
+
+    gap:
+        24px;
+}
+
+
+.house-card {
+
+    overflow:
+        hidden;
+
+    border:
+        1px solid #27313c;
+
+    border-radius:
+        18px;
+
+    background:
+        #111820;
+
+    box-shadow:
+        0 12px 40px
+        rgba(
+            0,
+            0,
+            0,
+            0.25
+        );
+}
+
+
+/* ---------------------------------------------------------
+   House header
+   --------------------------------------------------------- */
+
+.house-header {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    justify-content:
+        space-between;
+
+    padding:
+        22px;
+
+    border-bottom:
+        1px solid #27313c;
+}
+
+
+.house-id {
+
+    margin:
+        0;
+
+    font-size:
+        19px;
+}
+
+
+.house-meta {
+
+    margin-top:
+        5px;
+
+    color:
+        #6f7d89;
+
+    font-size:
+        12px;
+}
+
+
+.dot {
+
+    margin:
+        0 5px;
+}
+
+
+.status-badge {
+
+    padding:
+        6px 10px;
+
+    border-radius:
+        999px;
+
+    font-size:
+        11px;
+
+    font-weight:
+        700;
+
+    text-transform:
+        uppercase;
+}
+
+
+.status-badge.active {
+
+    color:
+        #63e6be;
+
+    background:
+        rgba(
+            50,
+            200,
+            140,
+            0.12
+        );
+}
+
+
+.status-badge.lost {
+
+    color:
+        #ff8787;
+
+    background:
+        rgba(
+            255,
+            80,
+            80,
+            0.12
+        );
+}
+
+
+/* ---------------------------------------------------------
+   Sections
+   --------------------------------------------------------- */
+
+.section-title {
+
+    padding:
+        18px 22px 10px;
+
+    color:
+        #65727f;
+
+    font-size:
+        10px;
+
+    font-weight:
+        800;
+
+    letter-spacing:
+        0.14em;
+}
+
+
+/* ---------------------------------------------------------
+   Sensors
+   --------------------------------------------------------- */
+
+.sensor-grid {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        repeat(
+            4,
+            1fr
+        );
+
+    gap:
+        10px;
+
+    padding:
+        0 22px;
+}
+
+
+.sensor-card {
+
+    padding:
+        14px 10px;
+
+    text-align:
+        center;
+
+    border:
+        1px solid #242e38;
+
+    border-radius:
+        12px;
+
+    background:
+        #0d1319;
+}
+
+
+.sensor-icon {
+
+    font-size:
+        20px;
+}
+
+
+.sensor-label {
+
+    margin-top:
+        7px;
+
+    color:
+        #687582;
+
+    font-size:
+        10px;
+
+    text-transform:
+        uppercase;
+}
+
+
+.sensor-value {
+
+    margin-top:
+        5px;
+
+    font-size:
+        15px;
+
+    font-weight:
+        700;
+}
+
+
+.sensor-value.danger {
+
+    color:
+        #ff6b6b;
+}
+
+
+/* ---------------------------------------------------------
+   Controls
+   --------------------------------------------------------- */
+
+.controls {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        repeat(
+            4,
+            1fr
+        );
+
+    gap:
+        10px;
+
+    padding:
+        0 22px;
+}
+
+
+.device-button {
+
+    display:
+        flex;
+
+    flex-direction:
+        column;
+
+    align-items:
+        center;
+
+    gap:
+        5px;
+
+    padding:
+        15px 8px;
+
+    border:
+        1px solid #2a3540;
+
+    border-radius:
+        12px;
+
+    background:
+        #151d25;
+
+    color:
+        #d7dee5;
+
+    cursor:
+        pointer;
+
+    transition:
+        0.15s ease;
+}
+
+
+.device-button:hover {
+
+    border-color:
+        #526170;
+
+    transform:
+        translateY(-1px);
+}
+
+
+.device-button.active {
+
+    border-color:
+        #63e6be;
+
+    background:
+        rgba(
+            50,
+            200,
+            140,
+            0.10
+        );
+}
+
+
+.device-icon {
+
+    font-size:
+        22px;
+}
+
+
+.device-name {
+
+    font-size:
+        12px;
+
+    font-weight:
+        700;
+}
+
+
+.device-state {
+
+    color:
+        #687582;
+
+    font-size:
+        10px;
+}
+
+
+/* ---------------------------------------------------------
+   RGB
+   --------------------------------------------------------- */
+
+.rgb-panel {
+
+    display:
+        flex;
+
+    gap:
+        20px;
+
+    padding:
+        0 22px;
+}
+
+
+.rgb-preview {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        1fr 1fr;
+
+    gap:
+        5px;
+
+    width:
+        90px;
+
+    height:
+        90px;
+
+    padding:
+        5px;
+
+    border:
+        1px solid #29343e;
+
+    border-radius:
+        12px;
+
+    background:
+        #080b0e;
+}
+
+
+.rgb-preview div {
+
+    border-radius:
+        6px;
+
+    background:
+        #000;
+
+    box-shadow:
+        0 0 12px
+        rgba(
+            255,
+            255,
+            255,
+            0.15
+        );
+}
+
+
+.rgb-controls {
+
+    flex:
+        1;
+}
+
+
+.rgb-controls label {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    justify-content:
+        space-between;
+
+    gap:
+        15px;
+
+    margin-bottom:
+        10px;
+
+    color:
+        #8996a3;
+
+    font-size:
+        12px;
+}
+
+
+.rgb-color {
+
+    width:
+        55px;
+
+    height:
+        30px;
+
+    padding:
+        0;
+
+    border:
+        none;
+
+    background:
+        transparent;
+
+    cursor:
+        pointer;
+}
+
+
+.rgb-brightness {
+
+    width:
+        180px;
+}
+
+
+.rgb-presets {
+
+    display:
+        flex;
+
+    flex-wrap:
+        wrap;
+
+    gap:
+        5px;
+}
+
+
+.rgb-presets button {
+
+    padding:
+        5px 8px;
+
+    border:
+        1px solid #2b3540;
+
+    border-radius:
+        6px;
+
+    background:
+        #151d25;
+
+    color:
+        #aeb8c2;
+
+    cursor:
+        pointer;
+
+    font-size:
+        10px;
+}
+
+
+.rgb-presets button:hover {
+
+    background:
+        #202a34;
+}
+
+
+/* ---------------------------------------------------------
+   Security
+   --------------------------------------------------------- */
+
+.security-row {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    gap:
+        12px;
+
+    padding:
+        0 22px;
+}
+
+
+.alarm-button {
+
+    padding:
+        9px 14px;
+
+    border:
+        1px solid #34404b;
+
+    border-radius:
+        9px;
+
+    background:
+        #161e26;
+
+    color:
+        #b6c0ca;
+
+    cursor:
+        pointer;
+}
+
+
+.alarm-button.armed {
+
+    color:
+        #ffd43b;
+
+    border-color:
+        #ffd43b;
+
+    background:
+        rgba(
+            255,
+            210,
+            50,
+            0.08
+        );
+}
+
+
+.alarm-button.triggered {
+
+    color:
+        #ff8787;
+
+    border-color:
+        #ff6b6b;
+
+    background:
+        rgba(
+            255,
+            70,
+            70,
+            0.12
+        );
+}
+
+
+.alarm-state {
+
+    color:
+        #687582;
+
+    font-size:
+        12px;
+}
+
+
+/* ---------------------------------------------------------
+   Messages
+   --------------------------------------------------------- */
+
+.message-row {
+
+    padding:
+        0 22px 22px;
+}
+
+
+.message-button {
+
+    padding:
+        9px 14px;
+
+    border:
+        1px solid #34404b;
+
+    border-radius:
+        9px;
+
+    background:
+        #161e26;
+
+    color:
+        #b6c0ca;
+
+    cursor:
+        pointer;
+}
+
+
+.message-button:hover {
+
+    background:
+        #202a34;
+}
+
+
+/* ---------------------------------------------------------
+   Mobile
+   --------------------------------------------------------- */
+
+@media (
+    max-width: 700px
+) {
+
+    .topbar {
+
+        padding:
+            18px;
+    }
+
+
+    main {
+
+        width:
+            calc(
+                100% - 20px
+            );
+
+        margin:
+            15px auto;
+    }
+
+
+    .houses {
+
+        grid-template-columns:
+            1fr;
+    }
+
+
+    .sensor-grid {
+
+        grid-template-columns:
+            1fr 1fr;
+    }
+
+
+    .controls {
+
+        grid-template-columns:
+            1fr 1fr;
+    }
+
+
+    .rgb-panel {
+
+        flex-direction:
+            column;
+    }
+
+}
