@@ -1,32 +1,22 @@
 """
-Clockwise-only fan.
+Single-output clockwise-only fan.
 
-GPIO 19 drives the fan.
+GPIO 19 HIGH -> fan ON
+GPIO 19 LOW  -> fan OFF
 
-There is deliberately NO reverse direction.
-
-    on()  -> clockwise
-    off() -> stopped
+There is intentionally no reverse direction.
 """
 
-from machine import Pin, PWM
-
-import config
+from machine import Pin
 
 
 class Fan:
 
-    def __init__(
-        self,
-        pin_num,
-    ):
+    def __init__(self, pin_num):
 
-        self._pwm = PWM(
-            Pin(pin_num)
-        )
-
-        self._pwm.freq(
-            config.FAN_PWM_FREQ
+        self._pin = Pin(
+            pin_num,
+            Pin.OUT,
         )
 
         self._on = False
@@ -34,30 +24,21 @@ class Fan:
         self.off()
 
 
-    def on(
-        self,
-        clockwise=True,
-    ):
-        """
-        Start the fan.
+    def on(self, clockwise=True):
 
-        The clockwise argument is accepted for
-        compatibility with the old firmware, but
-        is intentionally ignored.
-        """
+        # clockwise is accepted for compatibility,
+        # but the hardware only supports one direction.
 
         self._on = True
 
-        self._pwm.duty(
-            config.FAN_PWM_DUTY
-        )
+        self._pin.value(1)
 
 
     def off(self):
 
         self._on = False
 
-        self._pwm.duty(0)
+        self._pin.value(0)
 
 
     def is_on(self):
@@ -69,7 +50,5 @@ class Fan:
 
         return {
             "active": self._on,
-
-            # Always true because reverse is gone.
             "clockwise": True,
         }
