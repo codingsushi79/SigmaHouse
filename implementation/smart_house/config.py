@@ -1,30 +1,43 @@
-"""SigmaHouse Smart House configuration."""
+"""
+SigmaHouse ESP32 configuration.
 
-from secrets import WIFI_SSID, WIFI_PASS, HUB_URL  # noqa: F401
+Hardware mapping for the ESP32-WROOM-32E:
+
+    GPIO 5   -> Steam sensor
+    GPIO 12  -> PIR motion sensor
+    GPIO 13  -> WS2812 / NeoPixel RGB strip
+    GPIO 18  -> Temperature + humidity sensor
+    GPIO 19  -> Fan PWM, clockwise only
+    GPIO 23  -> Normal LED
+
+LCD1602:
+
+    GPIO 22 -> SCL
+    GPIO 21 -> SDA
+"""
+
+from secrets import WIFI_SSID, WIFI_PASS, HUB_URL
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Firmware
-# ---------------------------------------------------------
+# =========================================================
 
-# Keep the synchronous version as the default.
 USE_ASYNC = False
 
 
-# ---------------------------------------------------------
-# Timing
-# ---------------------------------------------------------
+# =========================================================
+# Network
+# =========================================================
 
 UPDATE_INTERVAL_MS = 1000
 
 WIFI_TIMEOUT_S = 15
 
-SENSOR_INTERVAL_MS = 2000
 
-
-# ---------------------------------------------------------
+# =========================================================
 # Messaging
-# ---------------------------------------------------------
+# =========================================================
 
 SEND_MODE = "pick"
 
@@ -33,108 +46,60 @@ MESSAGE_TO = "PASTE_FRIEND_ID_HERE"
 MESSAGE_TEXT = "HELLO FROM MY HOUSE"
 
 
-# ---------------------------------------------------------
-# Network command terminal
-# ---------------------------------------------------------
+# =========================================================
+# GPIO
+# =========================================================
 
-COMMAND_SERVER_ENABLED = True
-
-COMMAND_SERVER_PORT = 2222
-
-COMMAND_SERVER_PASSWORD = "CHANGE_THIS_PASSWORD"
-
-
-# ---------------------------------------------------------
-# GPIO pins
-# ---------------------------------------------------------
-
-# Normal single-color LED.
 PIN_LED = 23
 
-# Existing buttons.
-PIN_BUTTON_A = 26
-PIN_BUTTON_B = 25
-
-# PIR motion sensor.
 PIN_PIR = 12
 
-# Single-wire fan output.
-#
-# GPIO19 HIGH = fan receives +
-# GPIO19 LOW  = fan off
-#
-# There is intentionally NO reverse direction anymore.
-PIN_FAN = 19
-
-# Existing buzzer.
-PIN_BUZZER = 4
-
-# Temperature / humidity sensor.
-PIN_DHT = 18
-
-# Steam / water sensor.
 PIN_STEAM = 5
 
-# WS2812 / WS2812B RGB LED data.
+PIN_TEMP_HUMIDITY = 18
+
 PIN_RGB = 13
 
-# Four LEDs arranged physically as a 2x2 grid.
 RGB_COUNT = 4
 
-# If your physical chain goes:
+PIN_FAN = 19
+
+
+# =========================================================
+# Fan
+# =========================================================
+
+# The fan is now intentionally one-direction only.
 #
-#   0 1
-#   2 3
-#
-# this is the natural row-major mapping.
-#
-# If the LEDs are wired in a serpentine pattern, change this
-# later in devices/rgb.py.
-RGB_LAYOUT = "row-major"
+# GPIO 19 HIGH/PWM = clockwise
+# GPIO 19 LOW      = off
 
-# Default RGB color.
-RGB_DEFAULT_R = 0
-RGB_DEFAULT_G = 0
-RGB_DEFAULT_B = 0
+FAN_PWM_FREQ = 1000
 
-# Global brightness, 0-255.
-RGB_BRIGHTNESS = 80
+FAN_PWM_DUTY = 512
 
 
-# ---------------------------------------------------------
-# Temperature / humidity sensor
-# ---------------------------------------------------------
-
-# "DHT11" or "DHT22"
-DHT_TYPE = "DHT11"
-
-
-# ---------------------------------------------------------
-# Steam sensor
-# ---------------------------------------------------------
-
-# Most digital steam/water sensors report HIGH when triggered.
-# Change to 0 if your particular module is active-low.
-STEAM_ACTIVE_LEVEL = 1
-
-
-# ---------------------------------------------------------
-# I2C / LCD
-# ---------------------------------------------------------
+# =========================================================
+# LCD I2C
+# =========================================================
 
 PIN_I2C_SCL = 22
+
 PIN_I2C_SDA = 21
 
 LCD_I2C_ADDR = 0x27
 
 LCD_ROWS = 2
+
 LCD_COLS = 16
 
 
-# ---------------------------------------------------------
-# Startup
-# ---------------------------------------------------------
+# =========================================================
+# Boot animation
+# =========================================================
 
-STARTUP_ANIMATION_MS = 180
+BOOT_ANIMATION_DELAY_MS = 180
 
-STARTUP_WIFI_STEP_MS = 250
+BOOT_WIFI_TIMEOUT_MS = (
+    WIFI_TIMEOUT_S * 1000
+)
