@@ -1,10 +1,10 @@
 """
-4-pixel WS2812 / NeoPixel RGB controller.
+4-pixel WS2812 / NeoPixel controller.
 
-The four LEDs are physically arranged as:
+Physical layout:
 
-    [ 0 ] [ 1 ]
-    [ 2 ] [ 3 ]
+    [0] [1]
+    [2] [3]
 
 GPIO 13 -> DIN
 """
@@ -20,22 +20,31 @@ class RGB:
         self,
         pin_num,
         count=4,
+        brightness=255,
     ):
 
-        self._count = count
+        self._count = int(count)
 
-        self._pixels = neopixel.NeoPixel(
-            Pin(pin_num),
-            count,
+        self._pixels = (
+            neopixel.NeoPixel(
+                Pin(pin_num),
+                self._count,
+            )
         )
 
-        self._brightness = 255
+        self._brightness = max(
+            0,
+            min(
+                255,
+                int(brightness),
+            ),
+        )
 
         self._active = False
 
         self._colors = []
 
-        for _ in range(count):
+        for _ in range(self._count):
 
             self._colors.append(
                 [0, 0, 0]
@@ -44,27 +53,22 @@ class RGB:
         self.off()
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Internal
-    # -----------------------------------------------------
+    # =====================================================
 
-    def _scale(
-        self,
-        value,
-    ):
+    def _scale(self, value):
 
         return int(
-            (
-                value
-                * self._brightness
-            )
+            value
+            * self._brightness
             / 255
         )
 
 
     def _write(self):
 
-        for i in range(
+        for index in range(
             self._count
         ):
 
@@ -78,28 +82,32 @@ class RGB:
 
             else:
 
-                color = self._colors[i]
+                stored = (
+                    self._colors[index]
+                )
 
                 color = (
                     self._scale(
-                        color[0]
+                        stored[0]
                     ),
                     self._scale(
-                        color[1]
+                        stored[1]
                     ),
                     self._scale(
-                        color[2]
+                        stored[2]
                     ),
                 )
 
-            self._pixels[i] = color
+
+            self._pixels[index] = color
+
 
         self._pixels.write()
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Power
-    # -----------------------------------------------------
+    # =====================================================
 
     def on(self):
 
@@ -120,35 +128,29 @@ class RGB:
         return self._active
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Brightness
-    # -----------------------------------------------------
+    # =====================================================
 
     def set_brightness(
         self,
         brightness,
     ):
 
-        brightness = int(
-            brightness
-        )
-
-        brightness = max(
+        self._brightness = max(
             0,
             min(
                 255,
-                brightness,
+                int(brightness),
             ),
         )
-
-        self._brightness = brightness
 
         self._write()
 
 
-    # -----------------------------------------------------
-    # Individual pixel
-    # -----------------------------------------------------
+    # =====================================================
+    # Individual LED
+    # =====================================================
 
     def set_pixel(
         self,
@@ -167,7 +169,9 @@ class RGB:
 
             return False
 
+
         self._colors[index] = [
+
             max(
                 0,
                 min(
@@ -193,6 +197,7 @@ class RGB:
             ),
         ]
 
+
         self._active = True
 
         self._write()
@@ -200,9 +205,9 @@ class RGB:
         return True
 
 
-    # -----------------------------------------------------
-    # All pixels
-    # -----------------------------------------------------
+    # =====================================================
+    # All LEDs
+    # =====================================================
 
     def set_all(
         self,
@@ -212,6 +217,7 @@ class RGB:
     ):
 
         color = [
+
             max(
                 0,
                 min(
@@ -237,26 +243,29 @@ class RGB:
             ),
         ]
 
-        for i in range(
+
+        for index in range(
             self._count
         ):
 
-            self._colors[i] = (
+            self._colors[index] = (
                 color.copy()
             )
+
 
         self._active = True
 
         self._write()
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # State
-    # -----------------------------------------------------
+    # =====================================================
 
     def state(self):
 
         return {
+
             "active":
                 self._active,
 
