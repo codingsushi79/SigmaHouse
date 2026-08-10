@@ -1,23 +1,58 @@
-"""Constants for the IoT hub. Edit here, not in app.py."""
+"""Constants for the SigmaHouse IoT hub."""
 
-# How often the watchdog checks for stale houses (seconds).
+# ---------------------------------------------------------
+# Server / watchdog
+# ---------------------------------------------------------
+
 WATCHDOG_INTERVAL_S = 20
 
-# A house is marked "Lost" if no keepalive arrives for this many seconds.
 LOST_AFTER_S = 60
 
-# Devices the dashboard is allowed to toggle.
-VALID_DEVICES = ("led", "fan", "buzzer")
 
-# How long the dashboard keeps showing "Motion!" after a report, before it
-# auto-clears back to "No motion". Motion is an event (a pulse), so we hold
-# the display for a few seconds rather than leaving it stuck on.
+# ---------------------------------------------------------
+# Controllable devices
+# ---------------------------------------------------------
+
+# These devices can be toggled from the dashboard.
+VALID_DEVICES = (
+    "led",
+    "fan",
+    "buzzer",
+    "rgb",
+)
+
+
+# ---------------------------------------------------------
+# Motion
+# ---------------------------------------------------------
+
+# Motion is an event rather than a permanent state.
+#
+# Keep the dashboard showing "Motion!" for this many seconds.
 MOTION_HOLD_S = 3
 
-# --- House-to-house messages (Day 5) ---
-# Longest message we accept, in characters. 32 = two 16-char LCD lines.
+
+# ---------------------------------------------------------
+# Messages
+# ---------------------------------------------------------
+
+# LCD has two 16-character lines.
 MAX_MESSAGE_LEN = 32
 
-# How many unread messages a house's mailbox holds. Past this we drop the
-# oldest, so a house that never reads its mail can't grow forever.
 MAX_MESSAGES = 5
+
+
+# ---------------------------------------------------------
+# RGB
+# ---------------------------------------------------------
+
+RGB_PIXEL_COUNT = 4
+
+RGB_MAX_VALUE = 255
+
+
+# ---------------------------------------------------------
+# API
+# ---------------------------------------------------------
+
+MAX_JSON_BODY_SIZE = 64 * 1024
