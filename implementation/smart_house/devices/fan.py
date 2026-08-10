@@ -1,46 +1,47 @@
-"""Fan driven by a 2-pin H-bridge.
+"""Single-output clockwise-only fan."""
 
-Two PWM outputs control the motor:
-  - PWM A high, B low  -> spin one way (clockwise)
-  - PWM A low,  B high -> spin the other way (counter-clockwise)
-  - Both low           -> stopped
-
-We always use 50% duty (512/1023) -- enough torque, won't overheat.
-"""
-
-from machine import Pin, PWM
-
-PWM_FREQ = 1000
-PWM_DUTY = 512  # half power
+from machine import Pin
 
 
 class Fan:
-    def __init__(self, pin_a, pin_b):
-        self._a = PWM(Pin(pin_a))
-        self._b = PWM(Pin(pin_b))
-        self._a.freq(PWM_FREQ)
-        self._b.freq(PWM_FREQ)
+    """
+    Clockwise-only fan.
+
+    GPIO HIGH:
+        + output -> fan spins clockwise
+
+    GPIO LOW:
+        fan off
+
+    There is intentionally no reverse direction.
+    """
+
+    def __init__(self, pin_num):
+        self._pin = Pin(pin_num, Pin.OUT)
         self._on = False
-        self._clockwise = True
+
         self.off()
 
     def on(self, clockwise=True):
+        """
+        Turn the fan on.
+
+        The clockwise argument is accepted for compatibility with
+        the old firmware, but is intentionally ignored.
+        """
         self._on = True
-        self._clockwise = clockwise
-        if clockwise:
-            self._a.duty(PWM_DUTY)
-            self._b.duty(0)
-        else:
-            self._a.duty(0)
-            self._b.duty(PWM_DUTY)
+        self._pin.value(1)
 
     def off(self):
+        """Turn the fan off."""
         self._on = False
-        self._a.duty(0)
-        self._b.duty(0)
+        self._pin.value(0)
 
     def is_on(self):
         return self._on
 
     def state(self):
-        return {"active": self._on, "clockwise": self._clockwise}
+        return {
+            "active": self._on,
+            "clockwise": True,
+        }
