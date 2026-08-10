@@ -1,7 +1,9 @@
 """
 Temperature + humidity sensor.
 
-Designed for DHT11/DHT22-compatible sensors.
+Supports:
+    DHT11
+    DHT22
 """
 
 import dht
@@ -14,18 +16,38 @@ class TemperatureHumidity:
     def __init__(
         self,
         pin_num,
+        sensor_type="DHT11",
     ):
 
-        self._sensor = dht.DHT11(
-            Pin(pin_num)
+        self._pin = Pin(
+            pin_num
         )
 
+        sensor_type = str(
+            sensor_type
+        ).upper()
+
+
+        if sensor_type == "DHT22":
+
+            self._sensor = dht.DHT22(
+                self._pin
+            )
+
+        else:
+
+            self._sensor = dht.DHT11(
+                self._pin
+            )
+
+            sensor_type = "DHT11"
+
+
+        self._sensor_type = sensor_type
+
         self._temperature_c = None
-
         self._temperature_f = None
-
         self._humidity = None
-
         self._last_read_ms = None
 
 
@@ -43,6 +65,7 @@ class TemperatureHumidity:
                 self._sensor.humidity()
             )
 
+
             self._temperature_c = (
                 temperature_c
             )
@@ -51,9 +74,8 @@ class TemperatureHumidity:
                 temperature_c * 9 / 5
             ) + 32
 
-            self._humidity = (
-                humidity
-            )
+            self._humidity = humidity
+
 
             try:
 
@@ -67,7 +89,9 @@ class TemperatureHumidity:
 
                 self._last_read_ms = None
 
+
             return True
+
 
         except Exception as error:
 
@@ -82,6 +106,7 @@ class TemperatureHumidity:
     def state(self):
 
         return {
+
             "temperature_c":
                 self._temperature_c,
 
@@ -92,7 +117,7 @@ class TemperatureHumidity:
                 self._humidity,
 
             "sensor":
-                "DHT11",
+                self._sensor_type,
 
             "last_read_ms":
                 self._last_read_ms,
