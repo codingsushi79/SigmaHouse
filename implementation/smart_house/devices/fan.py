@@ -1,12 +1,10 @@
 """
-SigmaHouse fan driver.
+SigmaHouse clockwise-only fan.
 
-Single GPIO fan control.
+GPIO 19 HIGH = fan ON
+GPIO 19 LOW  = fan OFF
 
-GPIO HIGH = fan ON
-GPIO LOW  = fan OFF
-
-The fan is clockwise-only.
+There is intentionally no reverse direction.
 """
 
 
@@ -30,7 +28,7 @@ class Fan:
     def on(self, clockwise=True):
 
         # clockwise is retained as a compatibility
-        # argument, but there is no reverse direction.
+        # argument. The hardware only has one direction.
 
         self._on = True
 
