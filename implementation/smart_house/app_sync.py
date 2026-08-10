@@ -1,19 +1,18 @@
 """
-Synchronous SigmaHouse firmware.
+SigmaHouse synchronous application.
 
 Hardware:
 
-    GPIO 5  -> steam
-    GPIO 12 -> motion
-    GPIO 13 -> 4x WS2812 RGB
-    GPIO 18 -> temperature/humidity
-    GPIO 19 -> clockwise-only fan
-    GPIO 23 -> normal LED
+GPIO 5  -> Steam sensor
+GPIO 12 -> PIR motion sensor
+GPIO 13 -> 4x WS2812 RGB LEDs
+GPIO 18 -> DHT temperature/humidity sensor
+GPIO 19 -> Fan, clockwise only
+GPIO 23 -> Normal LED
 
 LCD:
-
-    GPIO 22 -> SCL
-    GPIO 21 -> SDA
+GPIO 21 -> SDA
+GPIO 22 -> SCL
 """
 
 import time
@@ -34,9 +33,7 @@ from devices.fan import Fan
 from devices.buzzer import Buzzer
 from devices.lcd import LCD
 from devices.rgb import RGB
-from devices.temperature_humidity import (
-    TemperatureHumidity,
-)
+from devices.temperature_humidity import TemperatureHumidity
 from devices.steam import Steam
 from devices.safe import safe
 
@@ -54,47 +51,44 @@ uid = None
 
 
 # =========================================================
-# LCD boot animation
+# LCD helpers
 # =========================================================
 
-def _boot_frame(
-    lcd,
-    filled,
-    total,
-):
+def _lcd_show(lcd, line1="", line2=""):
+    try:
+        lcd.show(
+            str(line1)[:16],
+            str(line2)[:16],
+        )
+    except Exception as error:
+        print("LCD error:", error)
 
-    if total <= 0:
-        total = 1
 
+def _boot_frame(lcd, filled, total=7):
     filled = max(
         0,
-        min(
-            total,
-            filled,
-        ),
-    )
-
-    empty = (
-        total - filled
+        min(total, filled),
     )
 
     bar = (
-        "[" +
-        ("■" * filled) +
-        ("□" * empty) +
-        "]"
+        "["
+        + ("■" * filled)
+        + ("□" * (total - filled))
+        + "]"
     )
 
-    # 16-character LCD.
-    lcd.show(
+    _lcd_show(
+        lcd,
         "SIGMAHOUSE",
-        bar[:16],
+        bar,
     )
 
 
-def _connect_wifi(
-    lcd,
-):
+# =========================================================
+# WiFi
+# =========================================================
+
+def _connect_wifi(lcd):
 
     wlan = network.WLAN(
         network.STA_IF
@@ -102,15 +96,17 @@ def _connect_wifi(
 
     wlan.active(True)
 
-    # Already connected.
     if wlan.isconnected():
 
-        lcd.show(
+        ip = wlan.ifconfig()[0]
+
+        _lcd_show(
+            lcd,
             "WiFi connected",
-            wlan.ifconfig()[0],
+            ip,
         )
 
-        return wlan.ifconfig()[0]
+        return ip
 
 
     print(
@@ -118,21 +114,27 @@ def _connect_wifi(
         config.WIFI_SSID,
     )
 
-    wlan.connect(
-        config.WIFI_SSID,
-        config.WIFI_PASS,
-    )
 
+    try:
 
-    # -----------------------------------------------------
-    # Animated boot while WiFi connects
-    # -----------------------------------------------------
+        wlan.connect(
+            config.WIFI_SSID,
+            config.WIFI_PASS,
+        )
+
+    except Exception as error:
+
+        print(
+            "WiFi connect error:",
+            error,
+        )
+
 
     start = time.ticks_ms()
 
     frame = 0
 
-    total_boxes = 7
+    total = 7
 
 
     while not wlan.isconnected():
@@ -143,258 +145,82 @@ def _connect_wifi(
         )
 
 
-        if (
-            elapsed
-            >= config.BOOT_WIFI_TIMEOUT_MS
+        if elapsed >= (
+            config.WIFI_TIMEOUT_S * 1000
         ):
 
             break
 
 
-        filled = (
-            frame
-            % (total_boxes + 1)
-        )
-
-
         _boot_frame(
             lcd,
-            filled,
-            total_boxes,
-        )
-
-
-        print(
-            "WiFi boot:",
-            filled,
-            "/",
-            total_boxes,
+            frame % (total + 1),
+            total,
         )
 
 
         frame += 1
 
         time.sleep_ms(
-            config.BOOT_ANIMATION_DELAY_MS
+            config.STARTUP_ANIMATION_MS
         )
 
 
-    # -----------------------------------------------------
-    # Result
-    # -----------------------------------------------------
+    if wlan.isconnected():
 
-    if not wlan.isconnected():
+        ip = wlan.ifconfig()[0]
 
-        lcd.show(
-            "WiFi FAILED",
-            "Retrying...",
+        _lcd_show(
+            lcd,
+            "CONNECTED!",
+            ip,
         )
 
         print(
-            "WiFi connection failed"
+            "WiFi connected:",
+            ip,
         )
 
-        # Give the board a chance to retry
-        # without permanently crashing.
-        while not wlan.isconnected():
+        time.sleep_ms(1000)
 
-            try:
-
-                wlan.connect(
-                    config.WIFI_SSID,
-                    config.WIFI_PASS,
-                )
-
-            except Exception:
-                pass
+        return ip
 
 
-            for _ in range(10):
+    print("WiFi connection failed")
 
-                if wlan.isconnected():
-                    break
-
-                _boot_frame(
-                    lcd,
-                    _ % 8,
-                    7,
-                )
-
-                time.sleep_ms(
-                    config.BOOT_ANIMATION_DELAY_MS
-                )
-
-
-    ip = wlan.ifconfig()[0]
-
-
-    # Final boot screen.
-    lcd.show(
-        "CONNECTED!",
-        ip,
+    _lcd_show(
+        lcd,
+        "WiFi FAILED",
+        "Retrying...",
     )
 
-
-    time.sleep_ms(
-        1000
-    )
-
-
-    return ip
+    return None
 
 
 # =========================================================
-# Messaging
+# Sensors
 # =========================================================
 
-def _show_messages(
-    hub,
-    lcd,
-    buzzer,
+def _read_sensors(
+    environment,
+    steam,
 ):
 
-    data = hub.get_messages()
-
-    if not data:
-        return
-
-    msgs = data.get(
-        "messages",
-        [],
-    )
-
-    for message in msgs:
-
+    try:
+        environment.read()
+    except Exception as error:
         print(
-            ">>> MESSAGE from",
-            message["from"],
-            ":",
-            message["text"],
+            "Environment read error:",
+            error,
         )
 
+    return {
+        "environment":
+            environment.state(),
 
-    if msgs:
-
-        latest = msgs[-1]
-
-        lcd.show(
-            "Msg " +
-            latest["from"][-6:],
-
-            latest["text"][:16],
-        )
-
-        buzzer.beep(60)
-
-
-# =========================================================
-# Menu
-# =========================================================
-
-def _build_menu(
-    hub,
-    uid,
-):
-
-    if config.SEND_MODE == "pick":
-
-        houses = (
-            hub.get_houses()
-            or []
-        )
-
-        others = [
-            house["unique_id"]
-            for house in houses
-            if house["unique_id"] != uid
-        ]
-
-        return (
-            list(DEVICES)
-            + others
-        )
-
-    return (
-        list(DEVICES)
-        + ["msg"]
-    )
-
-
-# =========================================================
-# Messages from buttons
-# =========================================================
-
-def _send_from_button(
-    hub,
-    uid,
-    selected,
-    lcd,
-):
-
-    text = config.MESSAGE_TEXT
-
-
-    if config.SEND_MODE == "fixed":
-
-        result = hub.send_message(
-            config.MESSAGE_TO,
-            text,
-        )
-
-        lcd.show(
-            "Sent to",
-            config.MESSAGE_TO,
-        )
-
-        print(
-            "Message:",
-            result,
-        )
-
-
-    elif config.SEND_MODE == "broadcast":
-
-        others = [
-            house["unique_id"]
-            for house in (
-                hub.get_houses()
-                or []
-            )
-            if house["unique_id"] != uid
-        ]
-
-
-        for target in others:
-
-            hub.send_message(
-                target,
-                text,
-            )
-
-
-        lcd.show(
-            "Broadcast!",
-            str(len(others)) +
-            " houses",
-        )
-
-
-    elif config.SEND_MODE == "pick":
-
-        result = hub.send_message(
-            selected,
-            text,
-        )
-
-        lcd.show(
-            "Sent to",
-            selected,
-        )
-
-        print(
-            "Message:",
-            result,
-        )
+        "steam":
+            steam.state(),
+    }
 
 
 # =========================================================
@@ -440,123 +266,40 @@ def _build_state(
 # Apply hub state
 # =========================================================
 
-def _apply_state(
-    state,
-    led,
-    fan,
-    buzzer,
+def _apply_rgb_state(
     rgb,
+    state,
 ):
 
-    # -----------------------------------------------------
-    # LED
-    # -----------------------------------------------------
-
-    led_state = (
-        state.get(
-            "led",
-            {},
-        )
-    )
-
-    desired_led = bool(
-        led_state.get(
-            "active",
-            False,
-        )
+    rgb_state = state.get(
+        "rgb",
+        {},
     )
 
 
-    if desired_led != led.is_on():
-
-        if desired_led:
-            led.on()
-        else:
-            led.off()
-
-
-    # -----------------------------------------------------
-    # Fan
-    # -----------------------------------------------------
-
-    fan_state = (
-        state.get(
-            "fan",
-            {},
-        )
-    )
-
-    desired_fan = bool(
-        fan_state.get(
-            "active",
-            False,
-        )
-    )
-
-
-    if desired_fan != fan.is_on():
-
-        if desired_fan:
-
-            # clockwise is intentionally ignored
-            # by the Fan class.
-            fan.on(True)
-
-        else:
-
-            fan.off()
-
-
-    # -----------------------------------------------------
-    # Buzzer
-    # -----------------------------------------------------
-
-    buzzer_state = (
-        state.get(
-            "buzzer",
-            {},
-        )
-    )
-
-    desired_buzzer = bool(
-        buzzer_state.get(
-            "active",
-            False,
-        )
-    )
-
-
-    if (
-        desired_buzzer
-        != buzzer.is_on()
-    ):
-
-        if desired_buzzer:
-            buzzer.on()
-        else:
-            buzzer.off()
-
-
-    # -----------------------------------------------------
-    # RGB
-    # -----------------------------------------------------
-
-    rgb_state = (
-        state.get(
-            "rgb",
-            {},
-        )
-    )
-
+    # ---------------------------------------------
+    # Brightness
+    # ---------------------------------------------
 
     if "brightness" in rgb_state:
 
-        rgb.set_brightness(
-            rgb_state[
-                "brightness"
-            ]
-        )
+        try:
 
+            rgb.set_brightness(
+                rgb_state["brightness"]
+            )
+
+        except Exception as error:
+
+            print(
+                "RGB brightness error:",
+                error,
+            )
+
+
+    # ---------------------------------------------
+    # Colors
+    # ---------------------------------------------
 
     colors = rgb_state.get(
         "colors"
@@ -568,14 +311,14 @@ def _apply_state(
         list,
     ):
 
-        for i in range(
+        for index in range(
             min(
                 len(colors),
                 config.RGB_COUNT,
             )
         ):
 
-            color = colors[i]
+            color = colors[index]
 
             if (
                 isinstance(
@@ -585,23 +328,32 @@ def _apply_state(
                 and len(color) >= 3
             ):
 
-                rgb.set_pixel(
-                    i,
-                    color[0],
-                    color[1],
-                    color[2],
-                )
+                try:
+
+                    rgb.set_pixel(
+                        index,
+                        color[0],
+                        color[1],
+                        color[2],
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "RGB pixel error:",
+                        index,
+                        error,
+                    )
 
 
-    desired_rgb = bool(
-        rgb_state.get(
-            "active",
-            False,
-        )
-    )
+    # ---------------------------------------------
+    # Power
+    # ---------------------------------------------
 
-
-    if desired_rgb:
+    if rgb_state.get(
+        "active",
+        False,
+    ):
 
         rgb.on()
 
@@ -610,8 +362,181 @@ def _apply_state(
         rgb.off()
 
 
+def _apply_state(
+    state,
+    led,
+    fan,
+    buzzer,
+    rgb,
+):
+
+    # =====================================================
+    # Normal LED
+    # =====================================================
+
+    led_state = state.get(
+        "led",
+        {},
+    )
+
+    desired_led = bool(
+        led_state.get(
+            "active",
+            False,
+        )
+    )
+
+
+    if desired_led:
+
+        led.on()
+
+    else:
+
+        led.off()
+
+
+    # =====================================================
+    # Fan
+    # =====================================================
+
+    fan_state = state.get(
+        "fan",
+        {},
+    )
+
+    desired_fan = bool(
+        fan_state.get(
+            "active",
+            False,
+        )
+    )
+
+
+    if desired_fan:
+
+        # There is intentionally no reverse direction.
+        fan.on()
+
+    else:
+
+        fan.off()
+
+
+    # =====================================================
+    # Buzzer
+    # =====================================================
+
+    buzzer_state = state.get(
+        "buzzer",
+        {},
+    )
+
+    desired_buzzer = bool(
+        buzzer_state.get(
+            "active",
+            False,
+        )
+    )
+
+
+    if desired_buzzer:
+
+        buzzer.on()
+
+    else:
+
+        buzzer.off()
+
+
+    # =====================================================
+    # RGB
+    # =====================================================
+
+    _apply_rgb_state(
+        rgb,
+        state,
+    )
+
+
 # =========================================================
-# Toggle
+# Messages
+# =========================================================
+
+def _show_messages(
+    hub,
+    lcd,
+    buzzer,
+):
+
+    try:
+
+        data = hub.get_messages()
+
+    except Exception as error:
+
+        print(
+            "Message error:",
+            error,
+        )
+
+        return
+
+
+    if not data:
+        return
+
+
+    messages = data.get(
+        "messages",
+        [],
+    )
+
+
+    for message in messages:
+
+        print(
+            ">>> MESSAGE from",
+            message.get("from"),
+            ":",
+            message.get("text"),
+        )
+
+
+    if messages:
+
+        latest = messages[-1]
+
+        sender = str(
+            latest.get(
+                "from",
+                "",
+            )
+        )
+
+        text = str(
+            latest.get(
+                "text",
+                "",
+            )
+        )
+
+
+        _lcd_show(
+            lcd,
+            "Msg " + sender[-10:],
+            text,
+        )
+
+
+        try:
+            buzzer.beep(60)
+        except Exception:
+            pass
+
+
+# =========================================================
+# Device toggling
 # =========================================================
 
 def _toggle(
@@ -655,6 +580,158 @@ def _toggle(
 
 
 # =========================================================
+# Menu
+# =========================================================
+
+def _build_menu(
+    hub,
+    uid,
+):
+
+    menu = list(DEVICES)
+
+
+    if config.SEND_MODE == "pick":
+
+        try:
+
+            houses = (
+                hub.get_houses()
+                or []
+            )
+
+            for house in houses:
+
+                house_uid = house.get(
+                    "unique_id"
+                )
+
+                if (
+                    house_uid
+                    and house_uid != uid
+                ):
+
+                    menu.append(
+                        house_uid
+                    )
+
+        except Exception as error:
+
+            print(
+                "House list error:",
+                error,
+            )
+
+
+    return menu
+
+
+# =========================================================
+# Button messaging
+# =========================================================
+
+def _send_from_button(
+    hub,
+    uid,
+    selected,
+    lcd,
+):
+
+    text = config.MESSAGE_TEXT
+
+
+    if config.SEND_MODE == "fixed":
+
+        result = hub.send_message(
+            config.MESSAGE_TO,
+            text,
+        )
+
+        _lcd_show(
+            lcd,
+            "Sent to",
+            config.MESSAGE_TO,
+        )
+
+        print(
+            "Message:",
+            result,
+        )
+
+
+    elif config.SEND_MODE == "broadcast":
+
+        try:
+
+            houses = (
+                hub.get_houses()
+                or []
+            )
+
+        except Exception:
+
+            houses = []
+
+
+        count = 0
+
+
+        for house in houses:
+
+            target = house.get(
+                "unique_id"
+            )
+
+
+            if (
+                target
+                and target != uid
+            ):
+
+                try:
+
+                    hub.send_message(
+                        target,
+                        text,
+                    )
+
+                    count += 1
+
+                except Exception as error:
+
+                    print(
+                        "Send error:",
+                        error,
+                    )
+
+
+        _lcd_show(
+            lcd,
+            "Broadcast!",
+            str(count) + " houses",
+        )
+
+
+    elif config.SEND_MODE == "pick":
+
+        result = hub.send_message(
+            selected,
+            text,
+        )
+
+        _lcd_show(
+            lcd,
+            "Sent to",
+            selected,
+        )
+
+        print(
+            "Message:",
+            result,
+        )
+
+
+# =========================================================
 # Main
 # =========================================================
 
@@ -664,9 +741,9 @@ def run():
     global uid
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # LCD
-    # -----------------------------------------------------
+    # =====================================================
 
     lcd = safe(
         lambda: LCD(
@@ -680,24 +757,20 @@ def run():
     )
 
 
-    # -----------------------------------------------------
-    # Boot screen
-    # -----------------------------------------------------
+    # =====================================================
+    # Startup screen
+    # =====================================================
 
-    try:
-
-        lcd.show(
-            "SIGMAHOUSE",
-            "[□□□□□□□]",
-        )
-
-    except Exception:
-        pass
+    _lcd_show(
+        lcd,
+        "SIGMAHOUSE",
+        "[□□□□□□□]",
+    )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Hardware
-    # -----------------------------------------------------
+    # =====================================================
 
     led = safe(
         lambda: LED(
@@ -758,7 +831,8 @@ def run():
 
     environment = safe(
         lambda: TemperatureHumidity(
-            config.PIN_TEMP_HUMIDITY
+            config.PIN_DHT,
+            config.DHT_TYPE,
         ),
         "Temperature/Humidity",
     )
@@ -766,46 +840,38 @@ def run():
 
     steam = safe(
         lambda: Steam(
-            config.PIN_STEAM
+            config.PIN_STEAM,
+            config.STEAM_ACTIVE_LEVEL,
         ),
         "Steam",
     )
 
 
-    # -----------------------------------------------------
-    # Command server
-    # -----------------------------------------------------
-
-    command_server = None
-
-
-    if config.COMMAND_SERVER_ENABLED:
-
-        command_server = CommandServer(
-            led=led,
-            fan=fan,
-            buzzer=buzzer,
-            motion=motion,
-
-            # Keep command server compatible
-            # with the existing implementation.
-            port=config.COMMAND_SERVER_PORT,
-            password=config.COMMAND_SERVER_PASSWORD,
-        )
-
-
-    # -----------------------------------------------------
+    # =====================================================
     # WiFi
-    # -----------------------------------------------------
+    # =====================================================
 
     ip = _connect_wifi(
         lcd
     )
 
 
-    # -----------------------------------------------------
+    if ip is None:
+
+        # Don't completely crash the firmware.
+        # Keep the hardware alive and retry.
+        while ip is None:
+
+            time.sleep_ms(1000)
+
+            ip = _connect_wifi(
+                lcd
+            )
+
+
+    # =====================================================
     # Unique ID
-    # -----------------------------------------------------
+    # =====================================================
 
     uid = (
         ubinascii
@@ -817,9 +883,15 @@ def run():
     )
 
 
-    # -----------------------------------------------------
+    print(
+        "House ID:",
+        uid,
+    )
+
+
+    # =====================================================
     # Hub
-    # -----------------------------------------------------
+    # =====================================================
 
     hub = HubClient(
         config.HUB_URL,
@@ -827,76 +899,111 @@ def run():
     )
 
 
-    hub.register(
-        ip
-    )
+    try:
+
+        hub.register(
+            ip
+        )
+
+    except Exception as error:
+
+        print(
+            "Hub registration failed:",
+            error,
+        )
 
 
-    print(
-        "My house ID:",
-        uid,
-    )
-
-
-    # -----------------------------------------------------
+    # =====================================================
     # Command server
-    # -----------------------------------------------------
+    # =====================================================
 
-    if command_server is not None:
+    command_server = None
+
+
+    if config.COMMAND_SERVER_ENABLED:
 
         try:
 
+            command_server = CommandServer(
+                led=led,
+                fan=fan,
+                buzzer=buzzer,
+                motion=motion,
+                port=config.COMMAND_SERVER_PORT,
+                password=config.COMMAND_SERVER_PASSWORD,
+            )
+
+
             command_server.start()
 
+
             print(
-                "Command terminal listening on TCP port",
+                "Command server listening on",
                 config.COMMAND_SERVER_PORT,
             )
 
         except Exception as error:
 
             print(
-                "WARNING: Command server failed:",
+                "WARNING: Command server unavailable:",
                 error,
             )
 
             command_server = None
 
 
-    # -----------------------------------------------------
-    # Initial state
-    # -----------------------------------------------------
+    # =====================================================
+    # Initial sensors
+    # =====================================================
 
     try:
 
         environment.read()
 
-    except Exception:
-        pass
+    except Exception as error:
 
-
-    hub.push_state(
-        _build_state(
-            led,
-            fan,
-            buzzer,
-            rgb,
-            motion,
-            steam,
-            environment,
+        print(
+            "Initial environment read failed:",
+            error,
         )
-    )
 
 
-    lcd.show(
-        "Ready " + uid[-6:],
+    # =====================================================
+    # Initial state
+    # =====================================================
+
+    try:
+
+        hub.push_state(
+            _build_state(
+                led,
+                fan,
+                buzzer,
+                rgb,
+                motion,
+                steam,
+                environment,
+            )
+        )
+
+    except Exception as error:
+
+        print(
+            "Initial state push failed:",
+            error,
+        )
+
+
+    _lcd_show(
+        lcd,
+        "Ready",
         ip,
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Menu
-    # -----------------------------------------------------
+    # =====================================================
 
     menu = _build_menu(
         hub,
@@ -906,9 +1013,9 @@ def run():
     menu_index = 0
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Timers
-    # -----------------------------------------------------
+    # =====================================================
 
     last_keepalive = (
         time.ticks_ms()
@@ -923,13 +1030,13 @@ def run():
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Main loop
-    # -----------------------------------------------------
+    # =====================================================
 
-    try:
+    while True:
 
-        while True:
+        try:
 
             # ---------------------------------------------
             # Command server
@@ -937,23 +1044,44 @@ def run():
 
             if command_server is not None:
 
-                command_server.poll()
+                try:
+
+                    command_server.poll()
+
+                except Exception as error:
+
+                    print(
+                        "Command server error:",
+                        error,
+                    )
 
 
             # ---------------------------------------------
             # Button A
             # ---------------------------------------------
 
-            if button_a.was_pressed():
+            try:
 
-                menu_index = (
-                    menu_index + 1
-                ) % len(menu)
+                if button_a.was_pressed():
+
+                    if menu:
+
+                        menu_index = (
+                            menu_index + 1
+                        ) % len(menu)
 
 
-                lcd.show(
-                    "Select:",
-                    menu[menu_index],
+                        _lcd_show(
+                            lcd,
+                            "Select:",
+                            menu[menu_index],
+                        )
+
+            except Exception as error:
+
+                print(
+                    "Button A error:",
+                    error,
                 )
 
 
@@ -961,169 +1089,21 @@ def run():
             # Button B
             # ---------------------------------------------
 
-            if button_b.was_pressed():
+            try:
 
-                selected = (
-                    menu[menu_index]
-                )
+                if button_b.was_pressed():
 
+                    if menu:
 
-                if selected in DEVICES:
-
-                    _toggle(
-                        selected,
-                        led,
-                        fan,
-                        buzzer,
-                        rgb,
-                    )
+                        selected = menu[
+                            menu_index
+                        ]
 
 
-                    hub.push_state(
-                        _build_state(
-                            led,
-                            fan,
-                            buzzer,
-                            rgb,
-                            motion,
-                            steam,
-                            environment,
-                        )
-                    )
+                        if selected in DEVICES:
 
-
-                else:
-
-                    _send_from_button(
-                        hub,
-                        uid,
-                        selected,
-                        lcd,
-                    )
-
-
-            # ---------------------------------------------
-            # Motion
-            # ---------------------------------------------
-
-            if motion.was_triggered():
-
-                hub.report_motion()
-
-
-            # ---------------------------------------------
-            # Sensors
-            # ---------------------------------------------
-
-            if (
-                time.ticks_diff(
-                    time.ticks_ms(),
-                    last_sensor_read,
-                )
-                >= 2500
-            ):
-
-                last_sensor_read = (
-                    time.ticks_ms()
-                )
-
-
-                environment.read()
-
-
-                hub.push_state(
-                    _build_state(
-                        led,
-                        fan,
-                        buzzer,
-                        rgb,
-                        motion,
-                        steam,
-                        environment,
-                    )
-                )
-
-
-            # ---------------------------------------------
-            # Roster
-            # ---------------------------------------------
-
-            if (
-                time.ticks_diff(
-                    time.ticks_ms(),
-                    last_roster,
-                )
-                >= 3000
-            ):
-
-                last_roster = (
-                    time.ticks_ms()
-                )
-
-
-                menu = _build_menu(
-                    hub,
-                    uid,
-                )
-
-
-                if menu_index >= len(menu):
-
-                    menu_index = 0
-
-
-            # ---------------------------------------------
-            # Keepalive
-            # ---------------------------------------------
-
-            if (
-                time.ticks_diff(
-                    time.ticks_ms(),
-                    last_keepalive,
-                )
-                >= config.UPDATE_INTERVAL_MS
-            ):
-
-                last_keepalive = (
-                    time.ticks_ms()
-                )
-
-
-                resp = hub.keepalive(
-                    ip
-                )
-
-
-                if resp:
-
-                    # ---------------------------------
-                    # Alarm
-                    # ---------------------------------
-
-                    if resp.get(
-                        "alarm"
-                    ):
-
-                        buzzer.on()
-
-
-                    # ---------------------------------
-                    # Remote state
-                    # ---------------------------------
-
-                    if resp.get(
-                        "state_update"
-                    ):
-
-                        new_state = (
-                            hub.get_state()
-                        )
-
-
-                        if new_state:
-
-                            _apply_state(
-                                new_state,
+                            _toggle(
+                                selected,
                                 led,
                                 fan,
                                 buzzer,
@@ -1143,13 +1123,226 @@ def run():
                                 )
                             )
 
+                        else:
 
-                    # ---------------------------------
+                            _send_from_button(
+                                hub,
+                                uid,
+                                selected,
+                                lcd,
+                            )
+
+            except Exception as error:
+
+                print(
+                    "Button B error:",
+                    error,
+                )
+
+
+            # ---------------------------------------------
+            # Motion
+            # ---------------------------------------------
+
+            try:
+
+                if motion.was_triggered():
+
+                    hub.report_motion()
+
+            except Exception as error:
+
+                print(
+                    "Motion error:",
+                    error,
+                )
+
+
+            # ---------------------------------------------
+            # Sensors
+            # ---------------------------------------------
+
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_sensor_read,
+            ) >= config.SENSOR_INTERVAL_MS:
+
+                last_sensor_read = (
+                    time.ticks_ms()
+                )
+
+
+                try:
+
+                    environment.read()
+
+                except Exception as error:
+
+                    print(
+                        "DHT read error:",
+                        error,
+                    )
+
+
+                try:
+
+                    hub.push_state(
+                        _build_state(
+                            led,
+                            fan,
+                            buzzer,
+                            rgb,
+                            motion,
+                            steam,
+                            environment,
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "Sensor state push failed:",
+                        error,
+                    )
+
+
+            # ---------------------------------------------
+            # House roster
+            # ---------------------------------------------
+
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_roster,
+            ) >= 3000:
+
+                last_roster = (
+                    time.ticks_ms()
+                )
+
+
+                try:
+
+                    menu = _build_menu(
+                        hub,
+                        uid,
+                    )
+
+                    if (
+                        menu_index
+                        >= len(menu)
+                    ):
+
+                        menu_index = 0
+
+                except Exception as error:
+
+                    print(
+                        "Roster error:",
+                        error,
+                    )
+
+
+            # ---------------------------------------------
+            # Keepalive
+            # ---------------------------------------------
+
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_keepalive,
+            ) >= config.UPDATE_INTERVAL_MS:
+
+                last_keepalive = (
+                    time.ticks_ms()
+                )
+
+
+                try:
+
+                    response = hub.keepalive(
+                        ip
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "Keepalive error:",
+                        error,
+                    )
+
+                    response = None
+
+
+                if response:
+
+                    # -------------------------------------
+                    # Alarm
+                    # -------------------------------------
+
+                    if response.get(
+                        "alarm",
+                        False,
+                    ):
+
+                        try:
+                            buzzer.on()
+                        except Exception:
+                            pass
+
+
+                    # -------------------------------------
+                    # Remote state
+                    # -------------------------------------
+
+                    if response.get(
+                        "state_update",
+                        False,
+                    ):
+
+                        try:
+
+                            new_state = (
+                                hub.get_state()
+                            )
+
+
+                            if new_state:
+
+                                _apply_state(
+                                    new_state,
+                                    led,
+                                    fan,
+                                    buzzer,
+                                    rgb,
+                                )
+
+
+                                hub.push_state(
+                                    _build_state(
+                                        led,
+                                        fan,
+                                        buzzer,
+                                        rgb,
+                                        motion,
+                                        steam,
+                                        environment,
+                                    )
+                                )
+
+                        except Exception as error:
+
+                            print(
+                                "Remote state error:",
+                                error,
+                            )
+
+
+                    # -------------------------------------
                     # Messages
-                    # ---------------------------------
+                    # -------------------------------------
 
-                    if resp.get(
-                        "message"
+                    if response.get(
+                        "message",
+                        False,
                     ):
 
                         _show_messages(
@@ -1162,26 +1355,14 @@ def run():
             time.sleep_ms(50)
 
 
-    finally:
+        except Exception as error:
 
-        if command_server is not None:
+            # Keep the ESP32 alive even if something
+            # unexpected happens in the main loop.
 
-            try:
-                command_server.close()
-            except Exception:
-                pass
+            print(
+                "MAIN LOOP ERROR:",
+                error,
+            )
 
-
-        try:
-            hub.deregister()
-        except Exception:
-            pass
-
-
-        led.off()
-
-        fan.off()
-
-        buzzer.off()
-
-        rgb.off()
+            time.sleep_ms(500)
