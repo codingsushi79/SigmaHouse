@@ -1,13 +1,21 @@
-"""Synchronous firmware -- DEFAULT teaching version.
+"""
+SigmaHouse Smart House synchronous firmware.
 
-One while-True loop, one tick every 50 ms.
+ESP32-WROOM-32E / MicroPython.
 
-The loop:
-  1. Checks the network command terminal.
-  2. Checks button flags.
-  3. Checks the motion flag.
-  4. Sends a keepalive once per UPDATE_INTERVAL_MS.
-  5. Applies commands the hub sent back.
+Hardware:
+
+    GPIO18 -> DHT temperature/humidity
+    GPIO19 -> clockwise-only fan
+    GPIO23 -> normal LED
+    GPIO5  -> steam sensor
+    GPIO13 -> 4x WS2812 RGB LEDs
+    GPIO12 -> PIR motion
+    GPIO4  -> buzzer
+    GPIO25 -> button B
+    GPIO26 -> button A
+    GPIO21 -> LCD SDA
+    GPIO22 -> LCD SCL
 """
 
 import time
@@ -19,7 +27,6 @@ from machine import unique_id
 import config
 
 from hub_client import HubClient
-from command_server import CommandServer
 
 from devices.led import LED
 from devices.button import Button
@@ -27,37 +34,189 @@ from devices.motion import Motion
 from devices.fan import Fan
 from devices.buzzer import Buzzer
 from devices.lcd import LCD
+
+from devices.dht import DHTSensor
+from devices.steam import SteamSensor
+from devices.rgb import RGB
+
 from devices.safe import safe
 
+from command_server import CommandServer
 
-DEVICES = ("led", "fan", "buzzer")
+
+# Devices that can be selected/toggled using the physical buttons.
+DEVICES = (
+    "led",
+    "fan",
+    "buzzer",
+    "rgb",
+)
 
 
-# Filled in by run().
-#
-# Left as module globals ON PURPOSE so the REPL can still reach
-# the house after Ctrl-C:
-#
-#     >>> import app_sync
-#     >>> app_sync.hub.send_message("FRIENDS_ID", "hello!")
-#
 hub = None
 uid = None
 
 
-# =========================================================
-# Messaging
-# =========================================================
+# ---------------------------------------------------------
+# LCD startup animation
+# ---------------------------------------------------------
 
-def _show_messages(hub, lcd, buzzer):
-    """Fetch our mailbox and display received messages."""
+def _boot_screen(lcd, title, status, dots=0):
+    """
+    Draw a small boot/status screen.
 
+    Example:
+
+        SigmaHouse
+        WiFi   ...
+    """
+
+    line2 = status + ("." * (dots % 4))
+
+    lcd.show(
+        title[:16],
+        line2[:16],
+    )
+
+
+def _connect_wifi(lcd):
+    """
+    Connect to WiFi while keeping the LCD animation alive.
+    """
+
+    wlan = network.WLAN(network.STA_IF)
+
+    wlan.active(True)
+
+    if wlan.isconnected():
+        lcd.show(
+            "SigmaHouse",
+            "WiFi already OK",
+        )
+
+        time.sleep_ms(500)
+
+        return wlan.ifconfig()[0]
+
+    print("Connecting to WiFi:", config.WIFI_SSID)
+
+    wlan.connect(
+        config.WIFI_SSID,
+        config.WIFI_PASS,
+    )
+
+    deadline = time.ticks_add(
+        time.ticks_ms(),
+        config.WIFI_TIMEOUT_S * 1000,
+    )
+
+    dots = 0
+
+    while (
+        not wlan.isconnected()
+        and time.ticks_diff(
+            deadline,
+            time.ticks_ms(),
+        ) > 0
+    ):
+        _boot_screen(
+            lcd,
+            "SigmaHouse",
+            "WiFi",
+            dots,
+        )
+
+        dots += 1
+
+        time.sleep_ms(
+            config.STARTUP_WIFI_STEP_MS
+        )
+
+    if not wlan.isconnected():
+        lcd.show(
+            "SigmaHouse",
+            "WiFi FAILED",
+        )
+
+        print("WiFi connection failed.")
+
+        raise RuntimeError(
+            "WiFi connect failed"
+        )
+
+    ip = wlan.ifconfig()[0]
+
+    print("WiFi connected.")
+    print("IP:", ip)
+
+    lcd.show(
+        "WiFi connected",
+        ip,
+    )
+
+    time.sleep_ms(700)
+
+    return ip
+
+
+def _startup_animation(lcd):
+    """
+    Startup animation.
+
+    The LCD animation happens while WiFi is being connected,
+    rather than making the display appear frozen.
+    """
+
+    try:
+        lcd.show(
+            "SigmaHouse",
+            "Starting...",
+        )
+
+        time.sleep_ms(500)
+
+        # Small startup sequence.
+        for text in (
+            "Hardware",
+            "Sensors",
+            "Network",
+        ):
+            lcd.show(
+                "SigmaHouse",
+                text + "...",
+            )
+
+            time.sleep_ms(
+                config.STARTUP_ANIMATION_MS
+            )
+
+        # WiFi connection itself has animated status.
+        ip = _connect_wifi(lcd)
+
+        return ip
+
+    except Exception:
+        raise
+
+
+# ---------------------------------------------------------
+# Messages
+# ---------------------------------------------------------
+
+def _show_messages(
+    hub,
+    lcd,
+    buzzer,
+):
     data = hub.get_messages()
 
     if not data:
         return
 
-    msgs = data.get("messages", [])
+    msgs = data.get(
+        "messages",
+        [],
+    )
 
     for message in msgs:
         print(
@@ -78,17 +237,18 @@ def _show_messages(hub, lcd, buzzer):
         buzzer.beep(60)
 
 
+# ---------------------------------------------------------
+# Menu
+# ---------------------------------------------------------
+
 def _build_menu(hub, uid):
-    """Build the button menu."""
-
     if config.SEND_MODE == "pick":
-
         houses = hub.get_houses() or []
 
         others = [
-            house["unique_id"]
-            for house in houses
-            if house["unique_id"] != uid
+            h["unique_id"]
+            for h in houses
+            if h["unique_id"] != uid
         ]
 
         return list(DEVICES) + others
@@ -96,13 +256,15 @@ def _build_menu(hub, uid):
     return list(DEVICES) + ["msg"]
 
 
-def _send_from_button(hub, uid, selected, lcd):
-    """Send a message using the configured send mode."""
-
+def _send_from_button(
+    hub,
+    uid,
+    selected,
+    lcd,
+):
     text = config.MESSAGE_TEXT
 
     if config.SEND_MODE == "fixed":
-
         result = hub.send_message(
             config.MESSAGE_TO,
             text,
@@ -121,21 +283,22 @@ def _send_from_button(hub, uid, selected, lcd):
         )
 
     elif config.SEND_MODE == "broadcast":
+        houses = hub.get_houses() or []
 
         others = [
-            house["unique_id"]
-            for house in (hub.get_houses() or [])
-            if house["unique_id"] != uid
+            h["unique_id"]
+            for h in houses
+            if h["unique_id"] != uid
         ]
 
-        for target in others:
+        for destination in others:
             hub.send_message(
-                target,
+                destination,
                 text,
             )
 
         print(
-            "Button B -> broadcast to",
+            "Broadcast to",
             len(others),
             "houses:",
             text,
@@ -147,7 +310,6 @@ def _send_from_button(hub, uid, selected, lcd):
         )
 
     elif config.SEND_MODE == "pick":
-
         result = hub.send_message(
             selected,
             text,
@@ -166,72 +328,33 @@ def _send_from_button(hub, uid, selected, lcd):
         )
 
 
-# =========================================================
-# Wi-Fi
-# =========================================================
-
-def _connect_wifi(lcd):
-    """Connect to configured Wi-Fi network."""
-
-    wlan = network.WLAN(
-        network.STA_IF
-    )
-
-    wlan.active(True)
-
-    if not wlan.isconnected():
-
-        lcd.show(
-            "Connecting to",
-            config.WIFI_SSID,
-        )
-
-        wlan.connect(
-            config.WIFI_SSID,
-            config.WIFI_PASS,
-        )
-
-        deadline = (
-            time.time()
-            + config.WIFI_TIMEOUT_S
-        )
-
-        while (
-            not wlan.isconnected()
-            and time.time() < deadline
-        ):
-            time.sleep_ms(200)
-
-    if not wlan.isconnected():
-
-        lcd.show(
-            "WiFi FAILED"
-        )
-
-        raise RuntimeError(
-            "WiFi connect failed"
-        )
-
-    return wlan.ifconfig()[0]
-
-
-# =========================================================
+# ---------------------------------------------------------
 # State
-# =========================================================
+# ---------------------------------------------------------
 
 def _build_state(
     led,
     fan,
     buzzer,
     motion,
+    rgb,
+    dht_sensor,
+    steam,
 ):
-    """Build the state object sent to the hub."""
-
     return {
         "led": led.state(),
+
         "fan": fan.state(),
+
         "buzzer": buzzer.state(),
+
         "motion": motion.state(),
+
+        "rgb": rgb.state(),
+
+        "environment": dht_sensor.state(),
+
+        "steam": steam.state(),
     }
 
 
@@ -240,40 +363,95 @@ def _apply_state(
     led,
     fan,
     buzzer,
+    rgb,
 ):
-    """Apply a state received from the hub."""
+    """
+    Apply remote state.
+
+    Missing new keys are intentionally ignored so this remains
+    compatible with an older hub state.
+    """
+
+    # LED
+    led_state = state.get(
+        "led",
+        {},
+    )
 
     if (
-        state["led"]["active"]
-        != led.is_on()
+        "active" in led_state
+        and
+        led_state["active"] != led.is_on()
     ):
-        if state["led"]["active"]:
+        if led_state["active"]:
             led.on()
         else:
             led.off()
 
+    # Fan
+    fan_state = state.get(
+        "fan",
+        {},
+    )
+
     if (
-        state["fan"]["active"]
-        != fan.is_on()
+        "active" in fan_state
+        and
+        fan_state["active"] != fan.is_on()
     ):
-        if state["fan"]["active"]:
-            fan.on(
-                state["fan"].get(
-                    "clockwise",
-                    True,
-                )
-            )
+        if fan_state["active"]:
+            fan.on()
         else:
             fan.off()
 
+    # Buzzer
+    buzzer_state = state.get(
+        "buzzer",
+        {},
+    )
+
     if (
-        state["buzzer"]["active"]
-        != buzzer.is_on()
+        "active" in buzzer_state
+        and
+        buzzer_state["active"] != buzzer.is_on()
     ):
-        if state["buzzer"]["active"]:
+        if buzzer_state["active"]:
             buzzer.on()
         else:
             buzzer.off()
+
+    # RGB
+    rgb_state = state.get(
+        "rgb",
+        {},
+    )
+
+    if rgb_state:
+        if "brightness" in rgb_state:
+            rgb.set_brightness(
+                rgb_state["brightness"]
+            )
+
+        colors = rgb_state.get("colors")
+
+        if colors:
+            for index, color in enumerate(colors):
+                if index >= config.RGB_COUNT:
+                    break
+
+                if len(color) >= 3:
+                    rgb.set_pixel(
+                        index,
+                        color[0],
+                        color[1],
+                        color[2],
+                    )
+
+        if "active" in rgb_state:
+            if rgb_state["active"]:
+                rgb.on()
+            else:
+                rgb.off()
 
 
 def _toggle(
@@ -281,40 +459,70 @@ def _toggle(
     led,
     fan,
     buzzer,
+    rgb,
 ):
-    """Toggle one of the local devices."""
-
     if name == "led":
-
         if led.is_on():
             led.off()
         else:
             led.on()
 
     elif name == "fan":
-
         if fan.is_on():
             fan.off()
         else:
             fan.on()
 
     elif name == "buzzer":
-
         if buzzer.is_on():
             buzzer.off()
         else:
             buzzer.on()
 
+    elif name == "rgb":
+        if rgb.is_on():
+            rgb.off()
+        else:
+            rgb.on()
 
-# =========================================================
+
+# ---------------------------------------------------------
+# Sensors
+# ---------------------------------------------------------
+
+def _read_sensors(
+    dht_sensor,
+    steam,
+):
+    dht_sensor.read()
+
+    print(
+        "Temperature:",
+        dht_sensor.temperature_c(),
+        "C /",
+        dht_sensor.temperature_f(),
+        "F",
+    )
+
+    print(
+        "Humidity:",
+        dht_sensor.humidity(),
+        "%",
+    )
+
+    print(
+        "Steam:",
+        steam.is_active(),
+    )
+
+
+# ---------------------------------------------------------
 # Main
-# =========================================================
+# ---------------------------------------------------------
 
 def run():
-    """Run the synchronous SmartHouse firmware."""
-
     # -----------------------------------------------------
-    # Hardware
+    # Create devices
     # -----------------------------------------------------
 
     lcd = safe(
@@ -358,8 +566,7 @@ def run():
 
     fan = safe(
         lambda: Fan(
-            config.PIN_FAN_A,
-            config.PIN_FAN_B,
+            config.PIN_FAN
         ),
         "Fan",
     )
@@ -371,6 +578,81 @@ def run():
         "Buzzer",
     )
 
+    dht_sensor = safe(
+        lambda: DHTSensor(
+            config.PIN_DHT,
+            config.DHT_TYPE,
+        ),
+        "Temperature/Humidity",
+    )
+
+    steam = safe(
+        lambda: SteamSensor(
+            config.PIN_STEAM,
+            config.STEAM_ACTIVE_LEVEL,
+        ),
+        "Steam sensor",
+    )
+
+    rgb = safe(
+        lambda: RGB(
+            config.PIN_RGB,
+            config.RGB_COUNT,
+            config.RGB_BRIGHTNESS,
+        ),
+        "RGB",
+    )
+
+    # -----------------------------------------------------
+    # Startup
+    # -----------------------------------------------------
+
+    global hub, uid
+
+    ip = _startup_animation(lcd)
+
+    uid = ubinascii.hexlify(
+        unique_id()
+    ).decode().upper()
+
+    print(
+        "House ID:",
+        uid,
+    )
+
+    # -----------------------------------------------------
+    # Hub
+    # -----------------------------------------------------
+
+    hub = HubClient(
+        config.HUB_URL,
+        uid,
+    )
+
+    lcd.show(
+        "Connecting hub",
+        "...",
+    )
+
+    hub.register(ip)
+
+    # Push the complete initial state.
+    hub.push_state(
+        _build_state(
+            led,
+            fan,
+            buzzer,
+            motion,
+            rgb,
+            dht_sensor,
+            steam,
+        )
+    )
+
+    print(
+        "Registered with hub."
+    )
+
     # -----------------------------------------------------
     # Command server
     # -----------------------------------------------------
@@ -378,76 +660,39 @@ def run():
     command_server = None
 
     if config.COMMAND_SERVER_ENABLED:
-
-        command_server = CommandServer(
-            led=led,
-            fan=fan,
-            buzzer=buzzer,
-            motion=motion,
-            port=config.COMMAND_SERVER_PORT,
-            password=config.COMMAND_SERVER_PASSWORD,
-        )
-
-    # -----------------------------------------------------
-    # Wi-Fi / Hub
-    # -----------------------------------------------------
-
-    global hub, uid
-
-    ip = _connect_wifi(lcd)
-
-    uid = (
-        ubinascii
-        .hexlify(unique_id())
-        .decode()
-        .upper()
-    )
-
-    hub = HubClient(
-        config.HUB_URL,
-        uid,
-    )
-
-    hub.register(ip)
-
-    print(
-        "My house ID:",
-        uid,
-        " -- give this to a friend so they can message you!",
-    )
-
-    # -----------------------------------------------------
-    # Start command server
-    # -----------------------------------------------------
-
-    if command_server is not None:
-
         try:
+            command_server = CommandServer(
+                led=led,
+                fan=fan,
+                buzzer=buzzer,
+                motion=motion,
+                dht_sensor=dht_sensor,
+                steam=steam,
+                rgb=rgb,
+                port=config.COMMAND_SERVER_PORT,
+                password=config.COMMAND_SERVER_PASSWORD,
+            )
 
             command_server.start()
 
+        except Exception as e:
             print(
-                "Command terminal listening on TCP port",
-                config.COMMAND_SERVER_PORT,
-            )
-
-        except Exception as error:
-
-            print(
-                "WARNING: Command server failed to start:",
-                error,
+                "WARNING: command server unavailable:",
+                e,
             )
 
             command_server = None
 
+    # -----------------------------------------------------
+    # Ready
+    # -----------------------------------------------------
+
     lcd.show(
-        "Ready " + uid[-6:],
+        "SigmaHouse READY",
         ip,
     )
 
-    # -----------------------------------------------------
-    # Menu
-    # -----------------------------------------------------
+    time.sleep_ms(1000)
 
     menu = _build_menu(
         hub,
@@ -456,37 +701,25 @@ def run():
 
     menu_index = 0
 
-    # -----------------------------------------------------
-    # Timers
-    # -----------------------------------------------------
-
     last_keepalive = time.ticks_ms()
+
     last_roster = time.ticks_ms()
 
-    # -----------------------------------------------------
-    # Main loop
-    # -----------------------------------------------------
+    last_sensor_read = time.ticks_ms()
 
     try:
-
         while True:
 
-            # =================================================
-            # Network command terminal
-            # =================================================
-            #
-            # This is deliberately polled rather than using
-            # another thread. The normal firmware loop remains
-            # in control of the ESP32.
-            #
+            # ---------------------------------------------
+            # Command server
+            # ---------------------------------------------
 
             if command_server is not None:
-
                 command_server.poll()
 
-            # =================================================
+            # ---------------------------------------------
             # Button A
-            # =================================================
+            # ---------------------------------------------
 
             if button_a.was_pressed():
 
@@ -494,23 +727,29 @@ def run():
                     menu_index + 1
                 ) % len(menu)
 
+                selected = menu[
+                    menu_index
+                ]
+
                 print(
                     "Button A -> selected:",
-                    menu[menu_index],
+                    selected,
                 )
 
                 lcd.show(
                     "Select:",
-                    menu[menu_index],
+                    selected,
                 )
 
-            # =================================================
+            # ---------------------------------------------
             # Button B
-            # =================================================
+            # ---------------------------------------------
 
             if button_b.was_pressed():
 
-                selected = menu[menu_index]
+                selected = menu[
+                    menu_index
+                ]
 
                 if selected in DEVICES:
 
@@ -519,6 +758,7 @@ def run():
                         led,
                         fan,
                         buzzer,
+                        rgb,
                     )
 
                     print(
@@ -532,11 +772,13 @@ def run():
                             fan,
                             buzzer,
                             motion,
+                            rgb,
+                            dht_sensor,
+                            steam,
                         )
                     )
 
                 else:
-
                     _send_from_button(
                         hub,
                         uid,
@@ -544,25 +786,56 @@ def run():
                         lcd,
                     )
 
-            # =================================================
+            # ---------------------------------------------
             # Motion
-            # =================================================
+            # ---------------------------------------------
 
             if motion.was_triggered():
 
+                print(
+                    "MOTION DETECTED"
+                )
+
                 hub.report_motion()
 
-            # =================================================
-            # Refresh house roster
-            # =================================================
+            # ---------------------------------------------
+            # Sensors
+            # ---------------------------------------------
 
-            if (
-                time.ticks_diff(
-                    time.ticks_ms(),
-                    last_roster,
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_sensor_read,
+            ) >= config.SENSOR_INTERVAL_MS:
+
+                last_sensor_read = (
+                    time.ticks_ms()
                 )
-                >= 3000
-            ):
+
+                _read_sensors(
+                    dht_sensor,
+                    steam,
+                )
+
+                hub.push_state(
+                    _build_state(
+                        led,
+                        fan,
+                        buzzer,
+                        motion,
+                        rgb,
+                        dht_sensor,
+                        steam,
+                    )
+                )
+
+            # ---------------------------------------------
+            # Roster
+            # ---------------------------------------------
+
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_roster,
+            ) >= 3000:
 
                 last_roster = (
                     time.ticks_ms()
@@ -573,62 +846,59 @@ def run():
                     uid,
                 )
 
-                if menu_index >= len(menu):
+                if not menu:
+                    menu = list(DEVICES)
 
+                if menu_index >= len(menu):
                     menu_index = 0
 
-            # =================================================
-            # Hub keepalive
-            # =================================================
+            # ---------------------------------------------
+            # Keepalive
+            # ---------------------------------------------
 
-            if (
-                time.ticks_diff(
-                    time.ticks_ms(),
-                    last_keepalive,
-                )
-                >= config.UPDATE_INTERVAL_MS
-            ):
+            if time.ticks_diff(
+                time.ticks_ms(),
+                last_keepalive,
+            ) >= config.UPDATE_INTERVAL_MS:
 
                 last_keepalive = (
                     time.ticks_ms()
                 )
 
-                resp = hub.keepalive(ip)
+                resp = hub.keepalive(
+                    ip
+                )
 
                 if resp:
 
-                    # -----------------------------------------
-                    # Remote alarm
-                    # -----------------------------------------
-
-                    if resp.get("alarm"):
-
+                    # Alarm
+                    if resp.get(
+                        "alarm"
+                    ):
                         buzzer.on()
 
-                    # -----------------------------------------
-                    # Remote device state
-                    # -----------------------------------------
-
-                    if resp.get("state_update"):
+                    # Remote state
+                    if resp.get(
+                        "state_update"
+                    ):
 
                         new_state = (
                             hub.get_state()
                         )
 
                         if new_state:
-
                             _apply_state(
                                 new_state,
                                 led,
                                 fan,
                                 buzzer,
+                                rgb,
                             )
 
-                    # -----------------------------------------
                     # Messages
-                    # -----------------------------------------
-
-                    if resp.get("message"):
+                    if resp.get(
+                        "message"
+                    ):
 
                         _show_messages(
                             hub,
@@ -636,27 +906,20 @@ def run():
                             buzzer,
                         )
 
-            # =================================================
-            # Main loop tick
-            # =================================================
-
             time.sleep_ms(50)
 
     finally:
 
-        # -----------------------------------------------------
-        # Clean shutdown
-        # -----------------------------------------------------
-
         if command_server is not None:
+            command_server.close()
 
-            try:
-                command_server.close()
-            except Exception:
-                pass
-
-        hub.deregister()
+        if hub is not None:
+            hub.deregister()
 
         led.off()
+
         fan.off()
+
         buzzer.off()
+
+        rgb.off()
