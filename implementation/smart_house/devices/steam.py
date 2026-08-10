@@ -1,5 +1,5 @@
 """
-Digital steam sensor.
+SigmaHouse digital steam sensor.
 """
 
 from machine import Pin
