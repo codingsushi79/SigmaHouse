@@ -1,10 +1,6 @@
 """
 Digital steam sensor.
-
-GPIO HIGH = detected by default.
-GPIO LOW  = clear.
 """
-
 
 from machine import Pin
 
@@ -22,8 +18,8 @@ class Steam:
             Pin.IN,
         )
 
-        self._active_level = (
-            int(active_level)
+        self._active_level = int(
+            active_level
         )
 
 
