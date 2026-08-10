@@ -1,13 +1,5 @@
 """
-SigmaHouse IoT Hub web server.
-
-Run:
-
-    python app.py
-
-Then open:
-
-    http://localhost:8080/
+SigmaHouse IoT hub.
 """
 
 import threading
@@ -22,32 +14,21 @@ from flask import (
 import houses
 
 from constants import (
-    MAX_JSON_BODY_SIZE,
     MAX_MESSAGE_LEN,
     VALID_DEVICES,
     WATCHDOG_INTERVAL_S,
 )
 
 
-# ---------------------------------------------------------
-# Flask
-# ---------------------------------------------------------
-
 app = Flask(
     __name__
 )
 
-app.config[
-    "MAX_CONTENT_LENGTH"
-] = MAX_JSON_BODY_SIZE
-
-
-# ---------------------------------------------------------
-# CORS
-# ---------------------------------------------------------
 
 @app.after_request
-def add_cors_headers(response):
+def add_cors_headers(
+    response,
+):
 
     response.headers[
         "Access-Control-Allow-Origin"
@@ -66,10 +47,6 @@ def add_cors_headers(response):
     return response
 
 
-# ---------------------------------------------------------
-# Dashboard
-# ---------------------------------------------------------
-
 @app.route("/")
 def index():
 
@@ -77,10 +54,6 @@ def index():
         "index.html"
     )
 
-
-# ---------------------------------------------------------
-# Houses
-# ---------------------------------------------------------
 
 @app.route(
     "/api/houses",
@@ -106,16 +79,11 @@ def register_house():
         or {}
     )
 
-    unique_id = body.get(
+    uid = body.get(
         "unique_id"
     )
 
-    ip = body.get(
-        "ip_address",
-        request.remote_addr,
-    )
-
-    if not unique_id:
+    if not uid:
 
         return jsonify(
             {
@@ -124,19 +92,26 @@ def register_house():
             }
         ), 400
 
-    house = houses.register(
-        unique_id,
+
+    ip = body.get(
+        "ip_address",
+        request.remote_addr,
+    )
+
+
+    houses.register(
+        uid,
         ip,
     )
 
+
     return jsonify(
-        house
+        {
+            "ok": True,
+            "unique_id": uid,
+        }
     ), 201
 
-
-# ---------------------------------------------------------
-# Keepalive
-# ---------------------------------------------------------
 
 @app.route(
     "/api/houses/<uid>/keepalive",
@@ -151,15 +126,15 @@ def keepalive(uid):
         or {}
     )
 
-    ip = body.get(
-        "ip_address",
-        request.remote_addr,
-    )
 
     result = houses.keepalive(
         uid,
-        ip,
+        body.get(
+            "ip_address",
+            request.remote_addr,
+        ),
     )
+
 
     if result is None:
 
@@ -170,14 +145,11 @@ def keepalive(uid):
             }
         ), 404
 
+
     return jsonify(
         result
     )
 
-
-# ---------------------------------------------------------
-# State
-# ---------------------------------------------------------
 
 @app.route(
     "/api/houses/<uid>/state",
@@ -189,6 +161,7 @@ def get_state(uid):
         uid
     )
 
+
     if state is None:
 
         return jsonify(
@@ -197,6 +170,7 @@ def get_state(uid):
                     "unknown house"
             }
         ), 404
+
 
     return jsonify(
         state
@@ -216,9 +190,11 @@ def set_state(uid):
         or {}
     )
 
+
     state = body.get(
         "state"
     )
+
 
     if not isinstance(
         state,
@@ -232,6 +208,7 @@ def set_state(uid):
             }
         ), 400
 
+
     if not houses.set_state(
         uid,
         state,
@@ -244,6 +221,7 @@ def set_state(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True
@@ -251,27 +229,28 @@ def set_state(uid):
     )
 
 
-# ---------------------------------------------------------
-# Generic device toggle
-# ---------------------------------------------------------
+# =========================================================
+# Generic toggle
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>/toggle/<device>",
     methods=["POST"],
 )
-def toggle(uid, device):
+def toggle(
+    uid,
+    device,
+):
 
     if device not in VALID_DEVICES:
 
         return jsonify(
             {
                 "error":
-                    "device must be one of "
-                    + str(
-                        VALID_DEVICES
-                    )
+                    "invalid device"
             }
         ), 400
+
 
     if not houses.toggle_device(
         uid,
@@ -285,6 +264,7 @@ def toggle(uid, device):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True
@@ -292,15 +272,15 @@ def toggle(uid, device):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # RGB
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>/rgb",
     methods=["POST"],
 )
-def set_rgb(uid):
+def rgb(uid):
 
     body = (
         request.get_json(
@@ -309,92 +289,30 @@ def set_rgb(uid):
         or {}
     )
 
-    try:
 
-        result = houses.set_rgb(
-            uid,
-            colors=body.get(
-                "colors"
-            ),
-            brightness=body.get(
-                "brightness"
-            ),
-            active=body.get(
-                "active"
-            ),
-        )
+    if not houses.set_rgb(
+        uid,
 
-    except (
-        TypeError,
-        ValueError,
-    ) as exc:
+        colors=body.get(
+            "colors"
+        ),
 
-        return jsonify(
-            {
-                "error":
-                    str(exc)
-            }
-        ), 400
+        brightness=body.get(
+            "brightness"
+        ),
 
-    if not result:
-
-        return jsonify(
-            {
-                "error":
-                    "unknown house or invalid RGB data"
-            }
-        ), 400
-
-    return jsonify(
-        {
-            "ok": True
-        }
-    )
-
-
-@app.route(
-    "/api/houses/<uid>/rgb/color",
-    methods=["POST"],
-)
-def set_rgb_color(uid):
-
-    body = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
-
-    try:
-
-        result = houses.set_rgb_color(
-            uid,
-            body["r"],
-            body["g"],
-            body["b"],
-        )
-
-    except (
-        KeyError,
-        TypeError,
-        ValueError,
+        active=body.get(
+            "active"
+        ),
     ):
 
         return jsonify(
             {
                 "error":
-                    "r, g and b are required"
+                    "invalid RGB request"
             }
         ), 400
 
-    if not result:
-
-        return jsonify(
-            {
-                "error":
-                    "unknown house"
-            }
-        ), 404
 
     return jsonify(
         {
@@ -407,7 +325,7 @@ def set_rgb_color(uid):
     "/api/houses/<uid>/rgb/pixel",
     methods=["POST"],
 )
-def set_rgb_pixel(uid):
+def rgb_pixel(uid):
 
     body = (
         request.get_json(
@@ -416,37 +334,43 @@ def set_rgb_pixel(uid):
         or {}
     )
 
-    try:
 
-        result = houses.set_rgb_pixel(
-            uid,
-            body["index"],
-            body["r"],
-            body["g"],
-            body["b"],
-        )
+    required = (
+        "index",
+        "r",
+        "g",
+        "b",
+    )
 
-    except (
-        KeyError,
-        TypeError,
-        ValueError,
+
+    if not all(
+        key in body
+        for key in required
     ):
 
         return jsonify(
             {
                 "error":
-                    "index, r, g and b are required"
+                    "index,r,g,b required"
             }
         ), 400
 
-    if not result:
+
+    if not houses.set_rgb_pixel(
+        uid,
+        body["index"],
+        body["r"],
+        body["g"],
+        body["b"],
+    ):
 
         return jsonify(
             {
                 "error":
-                    "invalid house or pixel"
+                    "invalid house/pixel"
             }
         ), 400
+
 
     return jsonify(
         {
@@ -455,9 +379,9 @@ def set_rgb_pixel(uid):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Alarm
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>/arm",
@@ -472,12 +396,14 @@ def arm(uid):
         or {}
     )
 
+
     armed = bool(
         body.get(
             "armed",
             False,
         )
     )
+
 
     if not houses.arm_alarm(
         uid,
@@ -491,6 +417,7 @@ def arm(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True,
@@ -499,9 +426,9 @@ def arm(uid):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Motion
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>/report_motion",
@@ -520,6 +447,7 @@ def report_motion(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True
@@ -527,9 +455,9 @@ def report_motion(uid):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Messages
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>/messages",
@@ -537,11 +465,12 @@ def report_motion(uid):
 )
 def read_messages(uid):
 
-    messages = houses.get_messages(
+    msgs = houses.get_messages(
         uid
     )
 
-    if messages is None:
+
+    if msgs is None:
 
         return jsonify(
             {
@@ -550,10 +479,11 @@ def read_messages(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "messages":
-                messages
+                msgs
         }
     )
 
@@ -571,15 +501,12 @@ def leave_message(uid):
         or {}
     )
 
-    sender = body.get(
-        "from",
-        "dashboard",
-    )
 
     text = body.get(
         "text",
         "",
     )
+
 
     if not text:
 
@@ -590,20 +517,23 @@ def leave_message(uid):
             }
         ), 400
 
+
     if len(text) > MAX_MESSAGE_LEN:
 
         return jsonify(
             {
                 "error":
-                    "text too long "
-                    "(max %d)"
-                    % MAX_MESSAGE_LEN
+                    "message too long"
             }
         ), 400
 
+
     if not houses.send_message(
         uid,
-        sender,
+        body.get(
+            "from",
+            "dashboard",
+        ),
         text,
     ):
 
@@ -614,6 +544,7 @@ def leave_message(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True
@@ -621,9 +552,9 @@ def leave_message(uid):
     ), 201
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Delete
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route(
     "/api/houses/<uid>",
@@ -642,6 +573,7 @@ def delete_house(uid):
             }
         ), 404
 
+
     return jsonify(
         {
             "ok": True
@@ -649,13 +581,14 @@ def delete_house(uid):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Watchdog
-# ---------------------------------------------------------
+# =========================================================
 
 def _watchdog_tick():
 
     houses.mark_lost_if_stale()
+
 
     timer = threading.Timer(
         WATCHDOG_INTERVAL_S,
@@ -666,10 +599,6 @@ def _watchdog_tick():
 
     timer.start()
 
-
-# ---------------------------------------------------------
-# Main
-# ---------------------------------------------------------
 
 if __name__ == "__main__":
 
