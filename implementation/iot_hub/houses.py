@@ -1,19 +1,41 @@
+```python
 """
 SigmaHouse IoT hub state store.
+
+The hub maintains two concepts:
+
+1. reported_state
+   What the physical house says its hardware currently is.
+
+2. desired_state
+   What the hub/dashboard wants the house to become.
+
+This separation prevents the classic feedback loop:
+
+    house reports state
+        -> hub changes desired state
+        -> hub sends it back
+        -> house reports it
+        -> repeat forever
+
+Only dashboard/local/system commands create a new desired-state revision.
+House telemetry updates reported_state only.
 """
 
+import copy
 import time
 
 from datetime import datetime, timedelta
-
 from threading import Lock
 
 from constants import (
     LOST_AFTER_S,
     MAX_MESSAGES,
+    MAX_RFID_EVENTS,
     MOTION_HOLD_S,
-    RGB_PIXEL_COUNT,
     RGB_MAX_VALUE,
+    RGB_PIXEL_COUNT,
+    STATE_SCHEMA_VERSION,
     VALID_DEVICES,
 )
 
@@ -24,8 +46,14 @@ _MOTION_TS = {}
 
 _MESSAGES = {}
 
+_RFID_EVENTS = {}
+
 _LOCK = Lock()
 
+
+# =========================================================
+# Time
+# =========================================================
 
 def now_str():
 
@@ -34,6 +62,17 @@ def now_str():
     )
 
 
+def now_ms():
+
+    return int(
+        time.time() * 1000
+    )
+
+
+# =========================================================
+# Defaults
+# =========================================================
+
 def _default_rgb():
 
     return {
@@ -41,9 +80,11 @@ def _default_rgb():
 
         "brightness": 255,
 
-        "count": RGB_PIXEL_COUNT,
+        "count":
+            RGB_PIXEL_COUNT,
 
-        "layout": "2x2",
+        "layout":
+            "2x2",
 
         "colors": [
             [0, 0, 0],
@@ -58,8 +99,11 @@ def _default_state():
 
     return {
 
+        "schema_version":
+            STATE_SCHEMA_VERSION,
+
         "led": {
-            "active": False
+            "active": False,
         },
 
         "fan": {
@@ -68,18 +112,18 @@ def _default_state():
         },
 
         "buzzer": {
-            "active": False
+            "active": False,
         },
 
         "rgb":
             _default_rgb(),
 
         "motion": {
-            "detected": False
+            "detected": False,
         },
 
         "steam": {
-            "detected": False
+            "detected": False,
         },
 
         "environment": {
@@ -99,101 +143,205 @@ def _default_state():
             "last_read_ms":
                 None,
         },
+
+        "rfid": {
+
+            "last_uid":
+                None,
+
+            "last_seen_ms":
+                None,
+
+            "last_allowed":
+                None,
+        },
     }
 
 
-def _merge_state(
-    old,
-    incoming,
+# =========================================================
+# House record
+# =========================================================
+
+def _new_house(
+    unique_id,
+    ip_address,
 ):
 
-    result = _default_state()
+    state = _default_state()
 
-    # Start with the existing state.
-    for key in old:
+    return {
 
-        if key in result:
+        "unique_id":
+            unique_id,
 
-            result[key] = old[key]
+        "ip_address":
+            ip_address,
+
+        "status":
+            "Active",
+
+        "last_seen":
+            now_str(),
+
+        "last_seen_ms":
+            now_ms(),
+
+        "alarm_armed":
+            False,
+
+        "alarm_triggered":
+            False,
+
+        # -------------------------------------------------
+        # Desired state
+        # -------------------------------------------------
+
+        "desired_state":
+            copy.deepcopy(state),
+
+        "desired_revision":
+            0,
+
+        "desired_origin":
+            "system",
+
+        "desired_changed_at":
+            now_str(),
+
+        # -------------------------------------------------
+        # Last state reported by physical house
+        # -------------------------------------------------
+
+        "reported_state":
+            copy.deepcopy(state),
+
+        "reported_revision":
+            0,
+
+        "reported_at":
+            now_str(),
+
+        # -------------------------------------------------
+        # Compatibility field.
+        #
+        # Existing UI expects "state".
+        # We expose desired_state as state.
+        # -------------------------------------------------
+
+        "state":
+            copy.deepcopy(state),
+
+        # -------------------------------------------------
+        # Command synchronization
+        # -------------------------------------------------
+
+        "pending_state_update":
+            False,
+
+        "last_delivered_revision":
+            0,
+
+        # -------------------------------------------------
+        # Diagnostics
+        # -------------------------------------------------
+
+        "last_state_source":
+            "system",
+
+        "state_updates":
+            0,
+
+        "rfid_events":
+            0,
+    }
 
 
-    # Then merge incoming state.
-    for key in incoming:
+# =========================================================
+# State normalization
+# =========================================================
 
-        if key not in result:
-            continue
+def _normalize_rgb(rgb):
 
-        if (
-            isinstance(
-                result[key],
-                dict,
-            )
-            and isinstance(
-                incoming[key],
-                dict,
-            )
-        ):
+    if not isinstance(
+        rgb,
+        dict,
+    ):
 
-            result[key].update(
-                incoming[key]
-            )
-
-        else:
-
-            result[key] = incoming[key]
+        rgb = _default_rgb()
 
 
-    # RGB normalization.
-    rgb = result["rgb"]
+    brightness = rgb.get(
+        "brightness",
+        255,
+    )
+
+    try:
+
+        brightness = int(
+            brightness
+        )
+
+    except Exception:
+
+        brightness = 255
+
+
+    brightness = max(
+        0,
+        min(
+            RGB_MAX_VALUE,
+            brightness,
+        ),
+    )
+
 
     colors = rgb.get(
         "colors",
         [],
     )
 
-
     normalized = []
 
 
-    for i in range(
+    for index in range(
         RGB_PIXEL_COUNT
     ):
 
         if (
-            i < len(colors)
+            index < len(colors)
             and isinstance(
-                colors[i],
+                colors[index],
                 (list, tuple),
             )
-            and len(colors[i]) >= 3
+            and len(colors[index]) >= 3
         ):
 
+            values = []
+
+            for value in colors[index][:3]:
+
+                try:
+
+                    value = int(
+                        value
+                    )
+
+                except Exception:
+
+                    value = 0
+
+                values.append(
+                    max(
+                        0,
+                        min(
+                            RGB_MAX_VALUE,
+                            value,
+                        ),
+                    )
+                )
+
             normalized.append(
-                [
-                    max(
-                        0,
-                        min(
-                            RGB_MAX_VALUE,
-                            int(colors[i][0]),
-                        ),
-                    ),
-
-                    max(
-                        0,
-                        min(
-                            RGB_MAX_VALUE,
-                            int(colors[i][1]),
-                        ),
-                    ),
-
-                    max(
-                        0,
-                        min(
-                            RGB_MAX_VALUE,
-                            int(colors[i][2]),
-                        ),
-                    ),
-                ]
+                values
             )
 
         else:
@@ -203,30 +351,134 @@ def _merge_state(
             )
 
 
-    rgb["colors"] = normalized
+    return {
 
-    rgb["count"] = (
-        RGB_PIXEL_COUNT
-    )
-
-    rgb["layout"] = "2x2"
-
-    rgb["brightness"] = max(
-        0,
-        min(
-            RGB_MAX_VALUE,
-            int(
+        "active":
+            bool(
                 rgb.get(
-                    "brightness",
-                    255,
+                    "active",
+                    False,
                 )
             ),
-        ),
+
+        "brightness":
+            brightness,
+
+        "count":
+            RGB_PIXEL_COUNT,
+
+        "layout":
+            "2x2",
+
+        "colors":
+            normalized,
+    }
+
+
+def _merge_state(
+    old,
+    incoming,
+):
+
+    result = copy.deepcopy(
+        old
     )
+
+    if not isinstance(
+        incoming,
+        dict,
+    ):
+
+        return result
+
+
+    for key in (
+        "led",
+        "fan",
+        "buzzer",
+        "motion",
+        "steam",
+        "environment",
+        "rfid",
+    ):
+
+        if key not in incoming:
+            continue
+
+
+        value = incoming[key]
+
+
+        if isinstance(
+            value,
+            dict,
+        ):
+
+            if not isinstance(
+                result.get(key),
+                dict,
+            ):
+
+                result[key] = {}
+
+            result[key].update(
+                value
+            )
+
+        else:
+
+            result[key] = value
+
+
+    if "rgb" in incoming:
+
+        result["rgb"] = _normalize_rgb(
+            {
+                **result.get(
+                    "rgb",
+                    {},
+                ),
+                **(
+                    incoming.get(
+                        "rgb",
+                        {},
+                    )
+                    if isinstance(
+                        incoming.get(
+                            "rgb"
+                        ),
+                        dict,
+                    )
+                    else {}
+                ),
+            }
+        )
+
+
+    result[
+        "schema_version"
+    ] = STATE_SCHEMA_VERSION
 
 
     return result
 
+
+# =========================================================
+# Compatibility helper
+# =========================================================
+
+def _sync_compatibility_state(
+    house,
+):
+
+    house["state"] = copy.deepcopy(
+        house["desired_state"]
+    )
+
+
+# =========================================================
+# Public list
+# =========================================================
 
 def list_all():
 
@@ -238,10 +490,16 @@ def list_all():
                 house
             )
 
-        return list(
-            HOUSES.values()
+        return copy.deepcopy(
+            list(
+                HOUSES.values()
+            )
         )
 
+
+# =========================================================
+# Register
+# =========================================================
 
 def register(
     unique_id,
@@ -269,35 +527,19 @@ def register(
                 "last_seen"
             ] = now_str()
 
-            return existing
+            existing[
+                "last_seen_ms"
+            ] = now_ms()
+
+            return copy.deepcopy(
+                existing
+            )
 
 
-        house = {
-
-            "unique_id":
-                unique_id,
-
-            "ip_address":
-                ip_address,
-
-            "status":
-                "Active",
-
-            "last_seen":
-                now_str(),
-
-            "alarm_armed":
-                False,
-
-            "alarm_triggered":
-                False,
-
-            "pending_state_update":
-                False,
-
-            "state":
-                _default_state(),
-        }
+        house = _new_house(
+            unique_id,
+            ip_address,
+        )
 
 
         HOUSES[
@@ -305,8 +547,14 @@ def register(
         ] = house
 
 
-        return house
+        return copy.deepcopy(
+            house
+        )
 
+
+# =========================================================
+# Keepalive
+# =========================================================
 
 def keepalive(
     unique_id,
@@ -319,7 +567,9 @@ def keepalive(
             unique_id
         )
 
+
         if house is None:
+
             return None
 
 
@@ -330,6 +580,10 @@ def keepalive(
         house[
             "last_seen"
         ] = now_str()
+
+        house[
+            "last_seen_ms"
+        ] = now_ms()
 
         house[
             "status"
@@ -364,8 +618,122 @@ def keepalive(
                         unique_id
                     )
                 ),
+
+            "desired_revision":
+                house[
+                    "desired_revision"
+                ],
+
+            "reported_revision":
+                house[
+                    "reported_revision"
+                ],
         }
 
+
+# =========================================================
+# State reported FROM house
+#
+# This never changes desired_state.
+# This is the loop-prevention boundary.
+# =========================================================
+
+def report_state(
+    unique_id,
+    state,
+    revision=None,
+):
+
+    with _LOCK:
+
+        house = HOUSES.get(
+            unique_id
+        )
+
+
+        if house is None:
+
+            return None
+
+
+        merged = _merge_state(
+            house[
+                "reported_state"
+            ],
+            state,
+        )
+
+
+        house[
+            "reported_state"
+        ] = merged
+
+
+        house[
+            "reported_at"
+        ] = now_str()
+
+
+        house[
+            "reported_revision"
+        ] = (
+            revision
+            if revision is not None
+            else house[
+                "reported_revision"
+            ] + 1
+        )
+
+
+        house[
+            "last_state_source"
+        ] = "house"
+
+
+        house[
+            "state_updates"
+        ] += 1
+
+
+        # -------------------------------------------------
+        # IMPORTANT:
+        #
+        # A house report does NOT clear a desired command
+        # merely because the report arrived.
+        #
+        # It only clears it when the reported revision/state
+        # has caught up with the desired revision.
+        # -------------------------------------------------
+
+        if (
+            revision is not None
+            and revision
+            >= house[
+                "desired_revision"
+            ]
+        ):
+
+            house[
+                "pending_state_update"
+            ] = False
+
+            house[
+                "last_delivered_revision"
+            ] = revision
+
+
+        return copy.deepcopy(
+            house[
+                "reported_state"
+            ]
+        )
+
+
+# =========================================================
+# Get desired state
+#
+# This is what the ESP32 receives.
+# =========================================================
 
 def get_state(
     unique_id,
@@ -377,23 +745,32 @@ def get_state(
             unique_id
         )
 
+
         if house is None:
+
             return None
 
 
-        house[
-            "pending_state_update"
-        ] = False
+        _expire_motion(
+            house
+        )
 
 
-        return house[
-            "state"
-        ]
+        return copy.deepcopy(
+            house[
+                "desired_state"
+            ]
+        )
 
 
-def set_state(
+# =========================================================
+# Get synchronization packet
+#
+# New firmware can use this endpoint.
+# =========================================================
+
+def get_sync(
     unique_id,
-    state,
 ):
 
     with _LOCK:
@@ -402,20 +779,125 @@ def set_state(
             unique_id
         )
 
+
         if house is None:
+
+            return None
+
+
+        _expire_motion(
+            house
+        )
+
+
+        return {
+
+            "schema_version":
+                STATE_SCHEMA_VERSION,
+
+            "desired_revision":
+                house[
+                    "desired_revision"
+                ],
+
+            "reported_revision":
+                house[
+                    "reported_revision"
+                ],
+
+            "pending":
+                house[
+                    "pending_state_update"
+                ],
+
+            "state":
+                copy.deepcopy(
+                    house[
+                        "desired_state"
+                    ]
+                ),
+        }
+
+
+# =========================================================
+# State command FROM dashboard/local/system
+#
+# This DOES change desired state.
+# =========================================================
+
+def set_state(
+    unique_id,
+    state,
+    origin="dashboard",
+):
+
+    with _LOCK:
+
+        house = HOUSES.get(
+            unique_id
+        )
+
+
+        if house is None:
+
             return False
 
 
-        house[
-            "state"
-        ] = _merge_state(
-            house["state"],
+        merged = _merge_state(
+            house[
+                "desired_state"
+            ],
             state,
+        )
+
+
+        if (
+            merged
+            ==
+            house[
+                "desired_state"
+            ]
+        ):
+
+            return True
+
+
+        house[
+            "desired_state"
+        ] = merged
+
+
+        house[
+            "desired_revision"
+        ] += 1
+
+
+        house[
+            "desired_origin"
+        ] = origin
+
+
+        house[
+            "desired_changed_at"
+        ] = now_str()
+
+
+        house[
+            "pending_state_update"
+        ] = True
+
+
+        _sync_compatibility_state(
+            house
         )
 
 
         return True
 
+
+# =========================================================
+# Toggle
+# =========================================================
 
 def toggle_device(
     unique_id,
@@ -423,6 +905,7 @@ def toggle_device(
 ):
 
     if device not in VALID_DEVICES:
+
         return False
 
 
@@ -432,32 +915,50 @@ def toggle_device(
             unique_id
         )
 
+
         if house is None:
+
             return False
 
 
-        current = house[
-            "state"
-        ][
-            device
-        ]
+        state = copy.deepcopy(
+            house[
+                "desired_state"
+            ]
+        )
+
+
+        current = state.get(
+            device,
+            {}
+        )
 
 
         current[
             "active"
-        ] = not current.get(
-            "active",
-            False,
+        ] = not bool(
+            current.get(
+                "active",
+                False,
+            )
         )
 
 
-        house[
-            "pending_state_update"
-        ] = True
+        state[
+            device
+        ] = current
 
 
-        return True
+    return set_state(
+        unique_id,
+        state,
+        origin="dashboard",
+    )
 
+
+# =========================================================
+# RGB
+# =========================================================
 
 def set_rgb(
     unique_id,
@@ -472,18 +973,36 @@ def set_rgb(
             unique_id
         )
 
+
         if house is None:
+
             return False
 
 
-        rgb = house[
-            "state"
-        ][
+        state = copy.deepcopy(
+            house[
+                "desired_state"
+            ]
+        )
+
+
+        rgb = state[
             "rgb"
         ]
 
 
         if brightness is not None:
+
+            try:
+
+                brightness = int(
+                    brightness
+                )
+
+            except Exception:
+
+                return False
+
 
             rgb[
                 "brightness"
@@ -491,7 +1010,7 @@ def set_rgb(
                 0,
                 min(
                     RGB_MAX_VALUE,
-                    int(brightness),
+                    brightness,
                 ),
             )
 
@@ -507,66 +1026,36 @@ def set_rgb(
 
         if colors is not None:
 
-            if len(colors) != RGB_PIXEL_COUNT:
+            if not isinstance(
+                colors,
+                (list, tuple),
+            ):
+
                 return False
 
 
-            normalized = []
+            if len(colors) != RGB_PIXEL_COUNT:
 
-
-            for color in colors:
-
-                if (
-                    not isinstance(
-                        color,
-                        (list, tuple),
-                    )
-                    or len(color) < 3
-                ):
-
-                    return False
-
-
-                normalized.append(
-                    [
-                        max(
-                            0,
-                            min(
-                                255,
-                                int(color[0]),
-                            ),
-                        ),
-
-                        max(
-                            0,
-                            min(
-                                255,
-                                int(color[1]),
-                            ),
-                        ),
-
-                        max(
-                            0,
-                            min(
-                                255,
-                                int(color[2]),
-                            ),
-                        ),
-                    ]
-                )
+                return False
 
 
             rgb[
                 "colors"
-            ] = normalized
+            ] = colors
 
 
-        house[
-            "pending_state_update"
-        ] = True
+        state[
+            "rgb"
+        ] = _normalize_rgb(
+            rgb
+        )
 
 
-        return True
+    return set_state(
+        unique_id,
+        state,
+        origin="dashboard",
+    )
 
 
 def set_rgb_pixel(
@@ -577,7 +1066,19 @@ def set_rgb_pixel(
     b,
 ):
 
-    index = int(index)
+    try:
+
+        index = int(
+            index
+        )
+
+        r = int(r)
+        g = int(g)
+        b = int(b)
+
+    except Exception:
+
+        return False
 
 
     if (
@@ -594,58 +1095,77 @@ def set_rgb_pixel(
             unique_id
         )
 
+
         if house is None:
+
             return False
 
 
-        rgb = house[
-            "state"
-        ][
+        state = copy.deepcopy(
+            house[
+                "desired_state"
+            ]
+        )
+
+
+        colors = state[
             "rgb"
-        ]
-
-
-        rgb[
+        ][
             "colors"
-        ][index] = [
+        ]
+
+
+        colors[index] = [
             max(
                 0,
                 min(
-                    255,
-                    int(r),
+                    RGB_MAX_VALUE,
+                    r,
                 ),
             ),
 
             max(
                 0,
                 min(
-                    255,
-                    int(g),
+                    RGB_MAX_VALUE,
+                    g,
                 ),
             ),
 
             max(
                 0,
                 min(
-                    255,
-                    int(b),
+                    RGB_MAX_VALUE,
+                    b,
                 ),
             ),
         ]
 
 
-        rgb[
+        state[
+            "rgb"
+        ][
+            "colors"
+        ] = colors
+
+
+        state[
+            "rgb"
+        ][
             "active"
         ] = True
 
 
-        house[
-            "pending_state_update"
-        ] = True
+    return set_state(
+        unique_id,
+        state,
+        origin="dashboard",
+    )
 
 
-        return True
-
+# =========================================================
+# Alarm
+# =========================================================
 
 def arm_alarm(
     unique_id,
@@ -658,7 +1178,9 @@ def arm_alarm(
             unique_id
         )
 
+
         if house is None:
+
             return False
 
 
@@ -675,21 +1197,13 @@ def arm_alarm(
                 "alarm_triggered"
             ] = False
 
-            house[
-                "state"
-            ][
-                "buzzer"
-            ][
-                "active"
-            ] = False
-
-            house[
-                "pending_state_update"
-            ] = True
-
 
         return True
 
+
+# =========================================================
+# Motion
+# =========================================================
 
 def report_motion(
     unique_id,
@@ -701,12 +1215,14 @@ def report_motion(
             unique_id
         )
 
+
         if house is None:
+
             return False
 
 
         house[
-            "state"
+            "reported_state"
         ][
             "motion"
         ][
@@ -744,11 +1260,16 @@ def _expire_motion(
     house,
 ):
 
-    if not house[
-        "state"
-    ][
-        "motion"
-    ][
+    motion = (
+        house[
+            "reported_state"
+        ][
+            "motion"
+        ]
+    )
+
+
+    if not motion[
         "detected"
     ]:
 
@@ -756,7 +1277,9 @@ def _expire_motion(
 
 
     timestamp = _MOTION_TS.get(
-        house["unique_id"]
+        house[
+            "unique_id"
+        ]
     )
 
 
@@ -768,14 +1291,142 @@ def _expire_motion(
         >= MOTION_HOLD_S
     ):
 
-        house[
-            "state"
-        ][
-            "motion"
-        ][
+        motion[
             "detected"
         ] = False
 
+
+# =========================================================
+# RFID
+# =========================================================
+
+def report_rfid(
+    unique_id,
+    uid,
+    allowed=None,
+):
+
+    if not uid:
+
+        return False
+
+
+    uid = str(
+        uid
+    ).upper().strip()
+
+
+    with _LOCK:
+
+        house = HOUSES.get(
+            unique_id
+        )
+
+
+        if house is None:
+
+            return False
+
+
+        timestamp = now_ms()
+
+
+        house[
+            "reported_state"
+        ][
+            "rfid"
+        ] = {
+
+            "last_uid":
+                uid,
+
+            "last_seen_ms":
+                timestamp,
+
+            "last_allowed":
+                (
+                    None
+                    if allowed is None
+                    else bool(
+                        allowed
+                    )
+                ),
+        }
+
+
+        event = {
+
+            "uid":
+                uid,
+
+            "allowed":
+                (
+                    None
+                    if allowed is None
+                    else bool(
+                        allowed
+                    )
+                ),
+
+            "time":
+                now_str(),
+        }
+
+
+        events = (
+            _RFID_EVENTS.setdefault(
+                unique_id,
+                [],
+            )
+        )
+
+
+        events.append(
+            event
+        )
+
+
+        if len(events) > MAX_RFID_EVENTS:
+
+            del events[
+                :len(events)
+                -
+                MAX_RFID_EVENTS
+            ]
+
+
+        house[
+            "rfid_events"
+        ] = len(
+            events
+        )
+
+
+        return True
+
+
+def get_rfid_events(
+    unique_id,
+):
+
+    with _LOCK:
+
+        if unique_id not in HOUSES:
+
+            return None
+
+
+        return copy.deepcopy(
+            _RFID_EVENTS.get(
+                unique_id,
+                [],
+            )
+        )
+
+
+# =========================================================
+# Messages
+# =========================================================
 
 def send_message(
     to_uid,
@@ -783,20 +1434,39 @@ def send_message(
     text,
 ):
 
+    text = str(
+        text
+    ).strip()
+
+
+    if not text:
+
+        return False
+
+
+    if len(text) > MAX_MESSAGES:
+
+        return False
+
+
     with _LOCK:
 
         if to_uid not in HOUSES:
+
             return False
 
 
-        box = _MESSAGES.setdefault(
-            to_uid,
-            [],
+        box = (
+            _MESSAGES.setdefault(
+                to_uid,
+                [],
+            )
         )
 
 
         box.append(
             {
+
                 "from":
                     sender,
 
@@ -811,7 +1481,11 @@ def send_message(
 
         if len(box) > MAX_MESSAGES:
 
-            del box[0]
+            del box[
+                :len(box)
+                -
+                MAX_MESSAGES
+            ]
 
 
         return True
@@ -824,7 +1498,9 @@ def get_messages(
     with _LOCK:
 
         if unique_id not in HOUSES:
+
             return None
+
 
         return _MESSAGES.pop(
             unique_id,
@@ -832,11 +1508,25 @@ def get_messages(
         )
 
 
+# =========================================================
+# Delete
+# =========================================================
+
 def delete(
     unique_id,
 ):
 
     with _LOCK:
+
+        if unique_id not in HOUSES:
+
+            return False
+
+
+        HOUSES.pop(
+            unique_id,
+            None,
+        )
 
         _MOTION_TS.pop(
             unique_id,
@@ -848,14 +1538,18 @@ def delete(
             None,
         )
 
-        return (
-            HOUSES.pop(
-                unique_id,
-                None,
-            )
-            is not None
+        _RFID_EVENTS.pop(
+            unique_id,
+            None,
         )
 
+
+        return True
+
+
+# =========================================================
+# Watchdog
+# =========================================================
 
 def mark_lost_if_stale():
 
@@ -872,15 +1566,17 @@ def mark_lost_if_stale():
 
         for house in HOUSES.values():
 
-            if (
-                house["status"]
-                != "Active"
-            ):
+            if house[
+                "status"
+            ] != "Active":
+
                 continue
 
 
             last = datetime.strptime(
-                house["last_seen"],
+                house[
+                    "last_seen"
+                ],
                 "%Y-%m-%d %H:%M:%S",
             )
 
@@ -899,10 +1595,43 @@ def mark_lost_if_stale():
                     "alarm_triggered"
                 ] = False
 
-                house[
-                    "state"
-                ][
-                    "buzzer"
-                ][
-                    "active"
-                ] = False
+
+# =========================================================
+# Diagnostics
+# =========================================================
+
+def get_diagnostics():
+
+    with _LOCK:
+
+        active = 0
+        lost = 0
+
+        for house in HOUSES.values():
+
+            if house[
+                "status"
+            ] == "Active":
+
+                active += 1
+
+            else:
+
+                lost += 1
+
+
+        return {
+
+            "houses":
+                len(HOUSES),
+
+            "active":
+                active,
+
+            "lost":
+                lost,
+
+            "time_ms":
+                now_ms(),
+        }
+```
