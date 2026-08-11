@@ -30,7 +30,7 @@ from threading import Lock
 
 from constants import (
     LOST_AFTER_S,
-    MAX_MESSAGES,
+    MAX_MESSAGE_LEN,
     MAX_RFID_EVENTS,
     MOTION_HOLD_S,
     RGB_MAX_VALUE,
@@ -1444,7 +1444,7 @@ def send_message(
         return False
 
 
-    if len(text) > MAX_MESSAGES:
+    if len(text) > MAX_MESSAGE_LEN:
 
         return False
 
@@ -1479,12 +1479,12 @@ def send_message(
         )
 
 
-        if len(box) > MAX_MESSAGES:
+        if len(box) > MAX_MESSAGE_LEN:
 
             del box[
                 :len(box)
                 -
-                MAX_MESSAGES
+                MAX_MESSAGE_LEN
             ]
 
 
