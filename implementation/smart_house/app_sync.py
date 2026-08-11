@@ -1,31 +1,37 @@
-"""
-SigmaHouse synchronous application.
+"""Resilient synchronous SigmaHouse firmware.
 
-Hardware:
+Features:
 
-GPIO 5  -> steam sensor
-GPIO 12 -> PIR motion sensor
-GPIO 13 -> 4x WS2812 RGB
-GPIO 18 -> DHT11
-GPIO 19 -> clockwise-only fan
-GPIO 23 -> normal LED
-
-Buttons:
-
-Button A -> local menu selection
-Button B -> activate selected item
+- Wi-Fi connection timeout.
+- Hub connection timeout.
+- Fast 20 ms local control loop.
+- Local operation when Wi-Fi/hub is unavailable.
+- Automatic SigmaHouse Wi-Fi AP + local HTTP hub fallback.
+- State-change-only network updates.
+- Remote state does not get echoed back to the hub.
+- Shared LCD/PN532 I2C bus.
+- RFID UID detection.
+- Expanded two-button local menu.
+- Hardware self-test.
+- Non-blocking command shell.
 """
 
 import time
 import network
 import ubinascii
 
-from machine import unique_id
+from machine import (
+    unique_id,
+    I2C,
+    Pin,
+)
 
 import config
 
 from hub_client import HubClient
 from command_server import CommandServer
+from local_hub import LocalHub
+from rfid import PN532I2C
 
 from devices.led import LED
 from devices.button import Button
@@ -42,8 +48,36 @@ from devices.safe import safe
 
 
 # =========================================================
-# LCD
+# MENU
 # =========================================================
+
+MENU = (
+    "LED",
+    "FAN",
+    "RGB",
+    "BUZZER",
+    "SENSORS",
+    "RFID",
+    "HW TEST",
+    "NETWORK",
+)
+
+
+# =========================================================
+# Helpers
+# =========================================================
+
+def uid_string():
+
+    return (
+        ubinascii
+        .hexlify(
+            unique_id()
+        )
+        .decode()
+        .upper()
+    )
+
 
 def lcd_show(
     lcd,
@@ -58,19 +92,44 @@ def lcd_show(
             str(line2)[:16],
         )
 
-    except Exception as error:
+    except Exception:
 
-        print(
-            "LCD error:",
-            error,
-        )
+        pass
+
+
+def make_i2c():
+
+    return I2C(
+        0,
+        scl=Pin(
+            config.PIN_I2C_SCL
+        ),
+        sda=Pin(
+            config.PIN_I2C_SDA
+        ),
+        freq=config.I2C_FREQ,
+    )
 
 
 # =========================================================
-# WiFi
+# Wi-Fi
 # =========================================================
 
 def connect_wifi(lcd):
+
+    if (
+        not config.WIFI_SSID
+        or config.WIFI_SSID.startswith(
+            "your-"
+        )
+    ):
+
+        print(
+            "No WiFi configured"
+        )
+
+        return None, None
+
 
     wlan = network.WLAN(
         network.STA_IF
@@ -78,33 +137,15 @@ def connect_wifi(lcd):
 
     wlan.active(True)
 
-    if wlan.isconnected():
 
-        ip = wlan.ifconfig()[0]
+    try:
 
-        print(
-            "WiFi already connected:",
-            ip,
-        )
+        wlan.disconnect()
 
-        lcd_show(
-            lcd,
-            "WiFi connected",
-            ip,
-        )
+    except Exception:
 
-        return ip
+        pass
 
-    print(
-        "Connecting to WiFi:",
-        config.WIFI_SSID,
-    )
-
-    lcd_show(
-        lcd,
-        "Connecting WiFi",
-        config.WIFI_SSID,
-    )
 
     try:
 
@@ -116,47 +157,50 @@ def connect_wifi(lcd):
     except Exception as error:
 
         print(
-            "WiFi connect error:",
+            "WiFi start:",
             error,
         )
 
+        return None, wlan
+
+
+    lcd_show(
+        lcd,
+        "WiFi",
+        "Connecting...",
+    )
+
+
     start = time.ticks_ms()
+
 
     while not wlan.isconnected():
 
-        elapsed = time.ticks_diff(
-            time.ticks_ms(),
-            start,
+        elapsed = (
+            time.ticks_diff(
+                time.ticks_ms(),
+                start,
+            )
         )
 
-        if elapsed >= (
-            config.WIFI_TIMEOUT_S * 1000
+        if (
+            elapsed
+            >= config.WIFI_TIMEOUT_S * 1000
         ):
 
             print(
-                "WiFi timeout - retrying"
+                "WiFi timeout"
             )
-
-            lcd_show(
-                lcd,
-                "WiFi timeout",
-                "Retrying...",
-            )
-
-            start = time.ticks_ms()
 
             try:
-
-                wlan.connect(
-                    config.WIFI_SSID,
-                    config.WIFI_PASS,
-                )
-
+                wlan.disconnect()
             except Exception:
-
                 pass
 
-        time.sleep_ms(250)
+            return None, wlan
+
+        time.sleep_ms(50)
+
 
     ip = wlan.ifconfig()[0]
 
@@ -165,523 +209,89 @@ def connect_wifi(lcd):
         ip,
     )
 
-    lcd_show(
-        lcd,
-        "WiFi connected",
+    return ip, wlan
+
+
+# =========================================================
+# Fallback AP
+# =========================================================
+
+def start_hotspot(lcd):
+
+    if not config.AP_ENABLED:
+
+        return None
+
+
+    ap = network.WLAN(
+        network.AP_IF
+    )
+
+    ap.active(True)
+
+
+    try:
+
+        ap.config(
+            essid=config.AP_SSID,
+            password=config.AP_PASSWORD,
+            authmode=network.AUTH_WPA_WPA2_PSK,
+        )
+
+    except Exception:
+
+        try:
+
+            ap.config(
+                essid=config.AP_SSID,
+                password=config.AP_PASSWORD,
+            )
+
+        except Exception:
+
+            ap.config(
+                essid=config.AP_SSID
+            )
+
+
+    try:
+
+        ap.ifconfig(
+            (
+                config.AP_IP,
+                "255.255.255.0",
+                config.AP_IP,
+                config.AP_IP,
+            )
+        )
+
+    except Exception:
+
+        pass
+
+
+    ip = ap.ifconfig()[0]
+
+    print(
+        "Local WiFi AP:",
+        config.AP_SSID,
         ip,
     )
 
-    time.sleep_ms(500)
-
-    return ip
-
-
-# =========================================================
-# RGB startup test
-#
-# Physical layout:
-#
-#       [ 0 ] [ 1 ]
-#       [ 2 ] [ 3 ]
-#
-# Each step rotates the four colors.
-#
-# Step 1:
-#       WHITE RED
-#       GREEN BLUE
-#
-# Step 2:
-#       RED GREEN
-#       BLUE WHITE
-#
-# Step 3:
-#       GREEN BLUE
-#       WHITE RED
-#
-# Step 4:
-#       BLUE WHITE
-#       RED GREEN
-#
-# Every pixel therefore receives:
-# WHITE -> RED -> GREEN -> BLUE
-#
-# =========================================================
-
-def rgb_startup_test(
-    lcd,
-    rgb,
-):
-
-    print()
-    print(
-        "Testing RGB LEDs..."
-    )
-
     lcd_show(
         lcd,
-        "RGB TEST",
-        "Rotation 1/4",
+        "LOCAL HUB",
+        ip,
     )
 
-    colors = (
-        (255, 255, 255),  # WHITE
-        (255, 0, 0),      # RED
-        (0, 255, 0),      # GREEN
-        (0, 0, 255),      # BLUE
-    )
-
-    try:
-
-        rgb.set_brightness(
-            255
-        )
-
-        for rotation in range(4):
-
-            print(
-                "RGB rotation",
-                rotation + 1,
-                "/ 4",
-            )
-
-            lcd_show(
-                lcd,
-                "RGB TEST",
-                "Rotation {}/4".format(
-                    rotation + 1
-                ),
-            )
-
-            for pixel in range(4):
-
-                color = colors[
-                    (
-                        pixel
-                        + rotation
-                    ) % 4
-                ]
-
-                rgb.set_pixel(
-                    pixel,
-                    color[0],
-                    color[1],
-                    color[2],
-                )
-
-            time.sleep_ms(500)
-
-        rgb.off()
-
-    except Exception as error:
-
-        print(
-            "RGB test error:",
-            error,
-        )
-
-        try:
-
-            rgb.off()
-
-        except Exception:
-
-            pass
-
-    time.sleep_ms(300)
-
-
-# =========================================================
-# Hardware startup test
-# =========================================================
-
-def hardware_self_test(
-    lcd,
-    led,
-    fan,
-    buzzer,
-    rgb,
-    motion,
-    steam,
-    environment,
-):
-
-    print()
-    print(
-        "================================"
-    )
-    print(
-        " SigmaHouse hardware self-test"
-    )
-    print(
-        "================================"
-    )
-    print()
-
-    lcd_show(
-        lcd,
-        "Hardware test",
-        "Starting...",
-    )
-
-    time.sleep_ms(500)
-
-    # =====================================================
-    # RGB
-    # =====================================================
-
-    rgb_startup_test(
-        lcd,
-        rgb,
-    )
-
-    # =====================================================
-    # MAIN LED
-    # =====================================================
-
-    print(
-        "Testing main LED..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing LED",
-        "GPIO 23",
-    )
-
-    try:
-
-        led.on()
-
-        time.sleep_ms(750)
-
-        led.off()
-
-    except Exception as error:
-
-        print(
-            "LED test error:",
-            error,
-        )
-
-        try:
-
-            led.off()
-
-        except Exception:
-
-            pass
-
-    time.sleep_ms(300)
-
-    # =====================================================
-    # FAN
-    # =====================================================
-
-    print(
-        "Testing fan..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing fan",
-        "Clockwise",
-    )
-
-    try:
-
-        fan.on()
-
-        time.sleep_ms(1000)
-
-        fan.off()
-
-    except Exception as error:
-
-        print(
-            "Fan test error:",
-            error,
-        )
-
-        try:
-
-            fan.off()
-
-        except Exception:
-
-            pass
-
-    time.sleep_ms(300)
-
-    # =====================================================
-    # BUZZER
-    # =====================================================
-
-    print(
-        "Testing buzzer..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing buzzer",
-        "1 second",
-    )
-
-    try:
-
-        buzzer.beep(
-            1000
-        )
-
-    except Exception as error:
-
-        print(
-            "buzzer.beep failed:",
-            error,
-        )
-
-        try:
-
-            buzzer.on()
-
-            time.sleep_ms(1000)
-
-            buzzer.off()
-
-        except Exception as error2:
-
-            print(
-                "Buzzer test error:",
-                error2,
-            )
-
-    try:
-
-        buzzer.off()
-
-    except Exception:
-
-        pass
-
-    time.sleep_ms(300)
-
-    # =====================================================
-    # TEMPERATURE / HUMIDITY
-    # =====================================================
-
-    print(
-        "Testing temperature/humidity..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing DHT11",
-        "Reading...",
-    )
-
-    try:
-
-        result = environment.read()
-
-        if result:
-
-            state = environment.state()
-
-            temperature = state.get(
-                "temperature_c",
-                "?",
-            )
-
-            humidity = state.get(
-                "humidity",
-                "?",
-            )
-
-            print(
-                "DHT11 OK"
-            )
-
-            print(
-                "Temperature:",
-                temperature,
-                "C",
-            )
-
-            print(
-                "Humidity:",
-                humidity,
-                "%",
-            )
-
-            lcd_show(
-                lcd,
-                "DHT11 OK",
-                "{}C {}%".format(
-                    temperature,
-                    humidity,
-                ),
-            )
-
-        else:
-
-            print(
-                "DHT11 measurement failed"
-            )
-
-            lcd_show(
-                lcd,
-                "DHT11 FAILED",
-                "Check sensor",
-            )
-
-    except Exception as error:
-
-        print(
-            "DHT11 test error:",
-            error,
-        )
-
-        lcd_show(
-            lcd,
-            "DHT11 ERROR",
-            "Check sensor",
-        )
-
-    time.sleep_ms(1000)
-
-    # =====================================================
-    # MOTION
-    # =====================================================
-
-    print(
-        "Testing motion sensor..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing motion",
-        "GPIO 12",
-    )
-
-    try:
-
-        motion_state = (
-            motion.state()
-        )
-
-        print(
-            "Motion:",
-            motion_state,
-        )
-
-    except Exception as error:
-
-        print(
-            "Motion test error:",
-            error,
-        )
-
-    time.sleep_ms(500)
-
-    # =====================================================
-    # STEAM
-    # =====================================================
-
-    print(
-        "Testing steam sensor..."
-    )
-
-    lcd_show(
-        lcd,
-        "Testing steam",
-        "GPIO 5",
-    )
-
-    try:
-
-        steam_state = (
-            steam.state()
-        )
-
-        print(
-            "Steam:",
-            steam_state,
-        )
-
-    except Exception as error:
-
-        print(
-            "Steam test error:",
-            error,
-        )
-
-    time.sleep_ms(500)
-
-    # =====================================================
-    # FINAL SAFE STATE
-    # =====================================================
-
-    print(
-        "Turning outputs off..."
-    )
-
-    try:
-
-        rgb.off()
-
-    except Exception:
-
-        pass
-
-    try:
-
-        led.off()
-
-    except Exception:
-
-        pass
-
-    try:
-
-        fan.off()
-
-    except Exception:
-
-        pass
-
-    try:
-
-        buzzer.off()
-
-    except Exception:
-
-        pass
-
-    print()
-    print(
-        "================================"
-    )
-    print(
-        " Hardware self-test complete"
-    )
-    print(
-        "================================"
-    )
-    print()
-
-    lcd_show(
-        lcd,
-        "Hardware OK",
-        "Starting...",
-    )
-
-    time.sleep_ms(500)
+    return ap
 
 
 # =========================================================
 # State
 # =========================================================
 
-def build_state(
+def state_snapshot(
     led,
     fan,
     buzzer,
@@ -692,21 +302,55 @@ def build_state(
 ):
 
     return {
-        "led": led.state(),
-        "fan": fan.state(),
-        "buzzer": buzzer.state(),
-        "rgb": rgb.state(),
-        "motion": motion.state(),
-        "steam": steam.state(),
-        "environment": environment.state(),
+
+        "led":
+            led.state(),
+
+        "fan":
+            fan.state(),
+
+        "buzzer":
+            buzzer.state(),
+
+        "rgb":
+            rgb.state(),
+
+        "motion":
+            motion.state(),
+
+        "steam":
+            steam.state(),
+
+        "environment":
+            environment.state(),
     }
 
 
+def state_key(state):
+
+    try:
+
+        import ujson
+
+        return ujson.dumps(
+            state,
+            sort_keys=True,
+        )
+
+    except Exception:
+
+        return str(state)
+
+
 # =========================================================
-# Apply remote state
+# Remote state
+#
+# IMPORTANT:
+# This function never pushes state.
+# That is the loop-prevention boundary.
 # =========================================================
 
-def apply_state(
+def apply_remote_state(
     state,
     led,
     fan,
@@ -714,93 +358,64 @@ def apply_state(
     rgb,
 ):
 
-    # -----------------------------------------------------
-    # LED
-    # -----------------------------------------------------
-
-    led_state = state.get(
-        "led",
-        {},
-    )
-
-    if led_state.get(
-        "active",
-        False,
+    if not isinstance(
+        state,
+        dict,
     ):
 
-        led.on()
+        return
 
-    else:
 
-        led.off()
-
-    # -----------------------------------------------------
-    # FAN
-    # -----------------------------------------------------
-
-    fan_state = state.get(
-        "fan",
-        {},
-    )
-
-    if fan_state.get(
-        "active",
-        False,
+    for name, obj in (
+        ("led", led),
+        ("fan", fan),
+        ("buzzer", buzzer),
     ):
 
-        fan.on()
+        item = state.get(
+            name,
+            {},
+        )
 
-    else:
+        if item.get(
+            "active",
+            False,
+        ):
 
-        fan.off()
+            obj.on()
 
-    # -----------------------------------------------------
-    # BUZZER
-    # -----------------------------------------------------
+        else:
 
-    buzzer_state = state.get(
-        "buzzer",
-        {},
-    )
+            obj.off()
 
-    if buzzer_state.get(
-        "active",
-        False,
-    ):
-
-        buzzer.on()
-
-    else:
-
-        buzzer.off()
-
-    # -----------------------------------------------------
-    # RGB
-    # -----------------------------------------------------
 
     rgb_state = state.get(
         "rgb",
         {},
     )
 
+
     if "brightness" in rgb_state:
 
         try:
 
             rgb.set_brightness(
-                rgb_state["brightness"]
+                int(
+                    rgb_state[
+                        "brightness"
+                    ]
+                )
             )
 
-        except Exception as error:
+        except Exception:
 
-            print(
-                "RGB brightness error:",
-                error,
-            )
+            pass
+
 
     colors = rgb_state.get(
         "colors"
     )
+
 
     if isinstance(
         colors,
@@ -814,7 +429,9 @@ def apply_state(
             )
         ):
 
-            color = colors[index]
+            color = colors[
+                index
+            ]
 
             if (
                 isinstance(
@@ -828,17 +445,15 @@ def apply_state(
 
                     rgb.set_pixel(
                         index,
-                        color[0],
-                        color[1],
-                        color[2],
+                        int(color[0]),
+                        int(color[1]),
+                        int(color[2]),
                     )
 
-                except Exception as error:
+                except Exception:
 
-                    print(
-                        "RGB pixel error:",
-                        error,
-                    )
+                    pass
+
 
     if rgb_state.get(
         "active",
@@ -853,125 +468,418 @@ def apply_state(
 
 
 # =========================================================
-# Local menu
+# Hardware test
 # =========================================================
 
-MENU_ITEMS = (
-    "LED",
-    "FAN",
-    "BUZZER",
-)
-
-
-def menu_state(
-    selected,
+def hardware_self_test(
+    lcd,
     led,
     fan,
     buzzer,
+    rgb,
+    motion,
+    steam,
+    environment,
+    rfid,
 ):
 
-    if selected == "LED":
+    print(
+        "======================"
+    )
 
-        return (
+    print(
+        " SigmaHouse HW TEST"
+    )
+
+    print(
+        "======================"
+    )
+
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "Starting",
+    )
+
+
+    # -----------------------------------------------------
+    # RGB
+    # -----------------------------------------------------
+
+    try:
+
+        rgb.set_brightness(
+            255
+        )
+
+        colors = (
+            (255, 255, 255),
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+        )
+
+
+        for rotation in range(4):
+
+            for index in range(
+                config.RGB_COUNT
+            ):
+
+                color = colors[
+                    (
+                        index
+                        + rotation
+                    )
+                    % len(colors)
+                ]
+
+                rgb.set_pixel(
+                    index,
+                    color[0],
+                    color[1],
+                    color[2],
+                )
+
+            time.sleep_ms(
+                180
+            )
+
+        rgb.off()
+
+    except Exception as error:
+
+        print(
+            "RGB test:",
+            error,
+        )
+
+
+    # -----------------------------------------------------
+    # LED
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "LED",
+    )
+
+    try:
+
+        led.on()
+
+        time.sleep_ms(
+            300
+        )
+
+        led.off()
+
+    except Exception as error:
+
+        print(
+            "LED test:",
+            error,
+        )
+
+
+    # -----------------------------------------------------
+    # FAN
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "FAN",
+    )
+
+    try:
+
+        fan.on()
+
+        time.sleep_ms(
+            500
+        )
+
+        fan.off()
+
+    except Exception as error:
+
+        print(
+            "Fan test:",
+            error,
+        )
+
+
+    # -----------------------------------------------------
+    # BUZZER
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "BUZZER",
+    )
+
+    try:
+
+        buzzer.beep(
+            300
+        )
+
+    except Exception:
+
+        try:
+
+            buzzer.on()
+
+            time.sleep_ms(
+                300
+            )
+
+            buzzer.off()
+
+        except Exception:
+
+            pass
+
+
+    # -----------------------------------------------------
+    # DHT
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "DHT11",
+    )
+
+    try:
+
+        result = (
+            environment.read()
+        )
+
+        print(
+            "DHT result:",
+            result,
+        )
+
+        print(
+            "DHT state:",
+            environment.state(),
+        )
+
+    except Exception as error:
+
+        print(
+            "DHT test:",
+            error,
+        )
+
+
+    # -----------------------------------------------------
+    # Inputs
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "INPUTS",
+    )
+
+    try:
+
+        print(
+            "Motion:",
+            motion.state(),
+        )
+
+        print(
+            "Steam:",
+            steam.state(),
+        )
+
+    except Exception as error:
+
+        print(
+            "Input test:",
+            error,
+        )
+
+
+    # -----------------------------------------------------
+    # RFID
+    # -----------------------------------------------------
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "RFID",
+    )
+
+    if rfid:
+
+        try:
+
+            present = (
+                rfid.begin()
+            )
+
+            firmware = (
+                rfid.firmware()
+            )
+
+            print(
+                "RFID present:",
+                present,
+            )
+
+            print(
+                "RFID firmware:",
+                firmware,
+            )
+
+        except Exception as error:
+
+            print(
+                "RFID test:",
+                error,
+            )
+
+    else:
+
+        print(
+            "RFID disabled"
+        )
+
+
+    # -----------------------------------------------------
+    # Safe state
+    # -----------------------------------------------------
+
+    try:
+        rgb.off()
+    except Exception:
+        pass
+
+    try:
+        led.off()
+    except Exception:
+        pass
+
+    try:
+        fan.off()
+    except Exception:
+        pass
+
+    try:
+        buzzer.off()
+    except Exception:
+        pass
+
+
+    lcd_show(
+        lcd,
+        "HW TEST",
+        "DONE",
+    )
+
+    time.sleep_ms(
+        300
+    )
+
+
+# =========================================================
+# Menu
+# =========================================================
+
+def menu_render(
+    lcd,
+    index,
+    led,
+    fan,
+    buzzer,
+    rgb,
+    environment,
+    rfid_status,
+    network_status,
+):
+
+    name = MENU[index]
+
+
+    if name == "LED":
+
+        value = (
             "ON"
             if led.is_on()
             else "OFF"
         )
 
-    if selected == "FAN":
 
-        return (
+    elif name == "FAN":
+
+        value = (
             "ON"
             if fan.is_on()
             else "OFF"
         )
 
-    if selected == "BUZZER":
 
-        return (
+    elif name == "RGB":
+
+        value = (
+            "ON"
+            if rgb.is_on()
+            else "OFF"
+        )
+
+
+    elif name == "BUZZER":
+
+        value = (
             "ON"
             if buzzer.is_on()
             else "OFF"
         )
 
-    return "OFF"
+
+    elif name == "SENSORS":
+
+        value = "{}C {}%".format(
+            environment.temperature_c(),
+            environment.humidity(),
+        )
 
 
-def show_menu(
-    lcd,
-    menu_index,
-    led,
-    fan,
-    buzzer,
-):
+    elif name == "RFID":
 
-    selected = MENU_ITEMS[
-        menu_index
-    ]
+        value = (
+            rfid_status
+            or "NO READER"
+        )
 
-    state = menu_state(
-        selected,
-        led,
-        fan,
-        buzzer,
-    )
+
+    elif name == "HW TEST":
+
+        value = "PRESS B"
+
+
+    else:
+
+        value = network_status
+
 
     lcd_show(
         lcd,
-        ">" + selected,
-        state,
-    )
-
-    print(
-        "MENU:",
-        selected,
-        state,
+        ">" + name,
+        value,
     )
 
 
-def toggle_menu_item(
-    menu_index,
-    led,
-    fan,
-    buzzer,
-):
-
-    selected = MENU_ITEMS[
-        menu_index
-    ]
-
-    if selected == "LED":
-
-        if led.is_on():
-
-            led.off()
-
-        else:
-
-            led.on()
-
-    elif selected == "FAN":
-
-        if fan.is_on():
-
-            fan.off()
-
-        else:
-
-            # Clockwise-only fan.
-            fan.on()
-
-    elif selected == "BUZZER":
-
-        if buzzer.is_on():
-
-            buzzer.off()
-
-        else:
-
-            buzzer.on()
-
-    return selected
+    return name
 
 
 # =========================================================
@@ -980,9 +888,9 @@ def toggle_menu_item(
 
 def run():
 
-    # =====================================================
+    # -----------------------------------------------------
     # LCD
-    # =====================================================
+    # -----------------------------------------------------
 
     lcd = safe(
         lambda: LCD(
@@ -995,15 +903,58 @@ def run():
         "LCD",
     )
 
+
+    # -----------------------------------------------------
+    # Shared I2C bus
+    # -----------------------------------------------------
+
+    i2c = None
+
+    rfid = None
+
+    try:
+
+        i2c = make_i2c()
+
+        addresses = i2c.scan()
+
+        print(
+            "I2C scan:",
+            [
+                hex(x)
+                for x in addresses
+            ],
+        )
+
+
+        if config.RFID_ENABLED:
+
+            rfid = PN532I2C(
+                i2c,
+                config.RFID_I2C_ADDR,
+                config.RFID_POLL_TIMEOUT_MS,
+            )
+
+            rfid.begin()
+
+    except Exception as error:
+
+        print(
+            "I2C/RFID init:",
+            error,
+        )
+
+
     lcd_show(
         lcd,
         "SIGMAHOUSE",
         "Starting...",
     )
 
-    # =====================================================
+
+    # -----------------------------------------------------
     # Devices
-    # =====================================================
+    # -----------------------------------------------------
 
     led = safe(
         lambda: LED(
@@ -1012,12 +963,14 @@ def run():
         "LED",
     )
 
+
     button_a = safe(
         lambda: Button(
             config.PIN_BUTTON_A
         ),
         "Button A",
     )
+
 
     button_b = safe(
         lambda: Button(
@@ -1026,12 +979,14 @@ def run():
         "Button B",
     )
 
+
     motion = safe(
         lambda: Motion(
             config.PIN_PIR
         ),
         "Motion",
     )
+
 
     fan = safe(
         lambda: Fan(
@@ -1040,12 +995,14 @@ def run():
         "Fan",
     )
 
+
     buzzer = safe(
         lambda: Buzzer(
             config.PIN_BUZZER
         ),
         "Buzzer",
     )
+
 
     rgb = safe(
         lambda: RGB(
@@ -1055,12 +1012,14 @@ def run():
         "RGB",
     )
 
+
     environment = safe(
         lambda: TemperatureHumidity(
             config.PIN_TEMP_HUMIDITY
         ),
-        "Temperature/Humidity",
+        "DHT",
     )
+
 
     steam = safe(
         lambda: Steam(
@@ -1070,9 +1029,10 @@ def run():
         "Steam",
     )
 
-    # =====================================================
+
+    # -----------------------------------------------------
     # Hardware test
-    # =====================================================
+    # -----------------------------------------------------
 
     hardware_self_test(
         lcd,
@@ -1083,164 +1043,260 @@ def run():
         motion,
         steam,
         environment,
+        rfid,
     )
 
-    # =====================================================
-    # WiFi
-    # =====================================================
 
-    ip = connect_wifi(
-        lcd
-    )
+    # -----------------------------------------------------
+    # Network
+    # -----------------------------------------------------
 
-    # =====================================================
-    # House ID
-    # =====================================================
-
-    uid = (
-        ubinascii
-        .hexlify(
-            unique_id()
-        )
-        .decode()
-        .upper()
-    )
+    uid = uid_string()
 
     print(
         "House ID:",
         uid,
     )
 
-    # =====================================================
-    # Hub
-    # =====================================================
+
+    ip, wlan = connect_wifi(
+        lcd
+    )
+
+
+    local_mode = False
+
+    local_ap = None
+
+    local_hub = None
+
+    registered = False
+
 
     hub = HubClient(
         config.HUB_URL,
         uid,
     )
 
-    try:
+
+    # -----------------------------------------------------
+    # Try external hub
+    # -----------------------------------------------------
+
+    if ip:
 
         result = hub.register(
             ip
         )
 
-        print(
-            "Hub registration:",
-            result,
+        registered = (
+            result is not None
         )
 
-    except Exception as error:
-
         print(
-            "Hub registration failed:",
-            error,
+            "External hub:",
+            registered,
         )
 
-    # =====================================================
-    # Command server
-    # =====================================================
+
+    # -----------------------------------------------------
+    # Fallback
+    # -----------------------------------------------------
+
+    if not registered:
+
+        local_ap = start_hotspot(
+            lcd
+        )
+
+
+        if local_ap:
+
+            local_hub = LocalHub(
+                config.LOCAL_HUB_PORT,
+                uid,
+            )
+
+            try:
+
+                local_hub.start()
+
+            except Exception as error:
+
+                print(
+                    "Local hub:",
+                    error,
+                )
+
+
+            hub = HubClient(
+                "http://{}:{}".format(
+                    config.AP_IP,
+                    config.LOCAL_HUB_PORT,
+                ),
+                uid,
+            )
+
+
+            local_mode = True
+
+        else:
+
+            # Completely offline but still usable.
+            local_mode = True
+
+
+    network_status = (
+        "LOCAL"
+        if local_mode
+        else "HUB"
+    )
+
+
+    # -----------------------------------------------------
+    # Shell
+    # -----------------------------------------------------
 
     command_server = None
+
 
     if config.COMMAND_SERVER_ENABLED:
 
         try:
 
-            command_server = CommandServer(
-                led=led,
-                fan=fan,
-                buzzer=buzzer,
-                motion=motion,
-                dht_sensor=environment,
-                steam=steam,
-                rgb=rgb,
-                port=config.COMMAND_SERVER_PORT,
-                password=config.COMMAND_SERVER_PASSWORD,
+            command_server = (
+                CommandServer(
+                    led,
+                    fan,
+                    buzzer,
+                    motion,
+                    environment,
+                    steam,
+                    rgb,
+                    config.COMMAND_SERVER_PORT,
+                    config.COMMAND_SERVER_PASSWORD,
+                )
             )
 
             command_server.start()
 
-            print(
-                "Command server started on port",
-                config.COMMAND_SERVER_PORT,
-            )
-
         except Exception as error:
 
             print(
-                "WARNING: Command server failed:",
+                "Shell:",
                 error,
             )
 
-            command_server = None
 
-    # =====================================================
-    # Initial DHT reading
-    # =====================================================
+    # -----------------------------------------------------
+    # Initial sensor reading
+    # -----------------------------------------------------
 
     try:
 
         environment.read()
 
-    except Exception as error:
+    except Exception:
 
-        print(
-            "Initial DHT read failed:",
-            error,
-        )
+        pass
 
-    # =====================================================
-    # Initial state
-    # =====================================================
 
-    try:
-
-        hub.push_state(
-            build_state(
-                led,
-                fan,
-                buzzer,
-                rgb,
-                motion,
-                steam,
-                environment,
-            )
-        )
-
-    except Exception as error:
-
-        print(
-            "Initial state push failed:",
-            error,
-        )
-
-    # =====================================================
-    # Local menu
-    # =====================================================
-
-    menu_index = 0
-
-    show_menu(
-        lcd,
-        menu_index,
-        led,
-        fan,
-        buzzer,
-    )
-
-    # =====================================================
+    # -----------------------------------------------------
     # Timers
-    # =====================================================
+    # -----------------------------------------------------
+
+    last_sent_key = None
+
+    last_keepalive = (
+        time.ticks_ms()
+    )
 
     last_sensor = (
         time.ticks_ms()
     )
 
-    last_keepalive = (
+    last_remote = (
         time.ticks_ms()
     )
+
+    last_rfid = (
+        time.ticks_ms()
+    )
+
+    last_network_retry = (
+        time.ticks_ms()
+    )
+
+
+    menu_index = 0
+
+
+    rfid_status = (
+        "READY"
+        if rfid and rfid.present
+        else "NONE"
+    )
+
+
+    menu_render(
+        lcd,
+        menu_index,
+        led,
+        fan,
+        buzzer,
+        rgb,
+        environment,
+        rfid_status,
+        network_status,
+    )
+
+
+    # -----------------------------------------------------
+    # Change-detected state sender
+    # -----------------------------------------------------
+
+    def push_if_changed(
+        force=False
+    ):
+
+        nonlocal last_sent_key
+
+
+        state = state_snapshot(
+            led,
+            fan,
+            buzzer,
+            rgb,
+            motion,
+            steam,
+            environment,
+        )
+
+
+        key = state_key(
+            state
+        )
+
+
+        if (
+            not force
+            and key == last_sent_key
+        ):
+
+            return
+
+
+        result = (
+            hub.push_state(
+                state
+            )
+        )
+
+
+        if result is not None:
+
+            last_sent_key = key
+
 
     # =====================================================
     # Main loop
@@ -1248,293 +1304,532 @@ def run():
 
     while True:
 
+        now = time.ticks_ms()
+
+
         try:
 
             # -------------------------------------------------
-            # Command server
+            # Local services
             # -------------------------------------------------
 
-            if command_server is not None:
+            if local_hub:
 
-                try:
+                local_hub.poll()
 
-                    command_server.poll()
 
-                except Exception as error:
+            if command_server:
 
-                    print(
-                        "Command server error:",
-                        error,
-                    )
+                command_server.poll()
+
 
             # -------------------------------------------------
-            # BUTTON A
+            # Buttons
             #
-            # Cycle:
-            #
-            # LED -> FAN -> BUZZER -> LED
+            # A = next
+            # B = select/action
+            # A+B = hardware test
             # -------------------------------------------------
+
+            a = False
+            b = False
+
 
             try:
 
-                if button_a.was_pressed():
-
-                    menu_index = (
-                        menu_index + 1
-                    ) % len(MENU_ITEMS)
-
-                    print(
-                        "Button A pressed"
-                    )
-
-                    show_menu(
-                        lcd,
-                        menu_index,
-                        led,
-                        fan,
-                        buzzer,
-                    )
-
-            except Exception as error:
-
-                print(
-                    "Button A error:",
-                    error,
+                a = (
+                    button_a.was_pressed()
                 )
 
-            # -------------------------------------------------
-            # BUTTON B
-            #
-            # Toggle selected item.
-            # -------------------------------------------------
+            except Exception:
+
+                pass
+
 
             try:
 
-                if button_b.was_pressed():
+                b = (
+                    button_b.was_pressed()
+                )
 
-                    selected = (
-                        toggle_menu_item(
-                            menu_index,
-                            led,
-                            fan,
-                            buzzer,
+            except Exception:
+
+                pass
+
+
+            if a and b:
+
+                hardware_self_test(
+                    lcd,
+                    led,
+                    fan,
+                    buzzer,
+                    rgb,
+                    motion,
+                    steam,
+                    environment,
+                    rfid,
+                )
+
+
+                menu_render(
+                    lcd,
+                    menu_index,
+                    led,
+                    fan,
+                    buzzer,
+                    rgb,
+                    environment,
+                    rfid_status,
+                    network_status,
+                )
+
+
+            elif a:
+
+                menu_index = (
+                    menu_index + 1
+                ) % len(MENU)
+
+
+                menu_render(
+                    lcd,
+                    menu_index,
+                    led,
+                    fan,
+                    buzzer,
+                    rgb,
+                    environment,
+                    rfid_status,
+                    network_status,
+                )
+
+
+            elif b:
+
+                selected = MENU[
+                    menu_index
+                ]
+
+
+                if selected == "LED":
+
+                    if led.is_on():
+                        led.off()
+                    else:
+                        led.on()
+
+
+                elif selected == "FAN":
+
+                    if fan.is_on():
+                        fan.off()
+                    else:
+                        fan.on()
+
+
+                elif selected == "RGB":
+
+                    if rgb.is_on():
+
+                        rgb.off()
+
+                    else:
+
+                        rgb.set_all(
+                            255,
+                            255,
+                            255,
                         )
-                    )
 
-                    print(
-                        "Button B:",
-                        selected,
-                    )
+                        rgb.on()
 
-                    show_menu(
-                        lcd,
-                        menu_index,
-                        led,
-                        fan,
-                        buzzer,
-                    )
+
+                elif selected == "BUZZER":
+
+                    if buzzer.is_on():
+
+                        buzzer.off()
+
+                    else:
+
+                        try:
+                            buzzer.beep(
+                                250
+                            )
+                        except Exception:
+                            pass
+
+
+                elif selected == "SENSORS":
 
                     try:
+                        environment.read()
+                    except Exception:
+                        pass
 
-                        hub.push_state(
-                            build_state(
-                                led,
-                                fan,
-                                buzzer,
-                                rgb,
-                                motion,
-                                steam,
-                                environment,
+
+                elif selected == "RFID":
+
+                    if rfid:
+
+                        card = (
+                            rfid.poll()
+                        )
+
+                        if card:
+
+                            allowed = (
+                                not config.RFID_ALLOWED_UIDS
+                                or card
+                                in config.RFID_ALLOWED_UIDS
                             )
-                        )
 
-                    except Exception as error:
+                            if allowed:
 
-                        print(
-                            "Local state push error:",
-                            error,
-                        )
+                                rfid_status = (
+                                    "OK "
+                                    + card[-10:]
+                                )
 
-            except Exception as error:
+                            else:
 
-                print(
-                    "Button B error:",
-                    error,
-                )
+                                rfid_status = (
+                                    "DENIED"
+                                )
 
-            # -------------------------------------------------
-            # Motion
-            # -------------------------------------------------
+                            print(
+                                "RFID:",
+                                card,
+                                "allowed:",
+                                allowed,
+                            )
 
-            try:
 
-                if motion.was_triggered():
+                elif selected == "HW TEST":
 
-                    print(
-                        "Motion detected"
+                    hardware_self_test(
+                        lcd,
+                        led,
+                        fan,
+                        buzzer,
+                        rgb,
+                        motion,
+                        steam,
+                        environment,
+                        rfid,
                     )
 
-                    hub.report_motion()
 
-            except Exception as error:
+                elif selected == "NETWORK":
 
-                print(
-                    "Motion error:",
-                    error,
+                    if (
+                        local_mode
+                        and wlan
+                    ):
+
+                        if wlan.isconnected():
+
+                            network_status = (
+                                wlan.ifconfig()[0]
+                            )
+
+                        else:
+
+                            network_status = (
+                                "LOCAL"
+                            )
+
+                    else:
+
+                        network_status = (
+                            "HUB"
+                        )
+
+
+                menu_render(
+                    lcd,
+                    menu_index,
+                    led,
+                    fan,
+                    buzzer,
+                    rgb,
+                    environment,
+                    rfid_status,
+                    network_status,
                 )
 
+
+                # Local physical changes are sent once.
+                push_if_changed()
+
+
             # -------------------------------------------------
-            # Sensors
+            # Sensor update
             # -------------------------------------------------
 
-            if time.ticks_diff(
-                time.ticks_ms(),
-                last_sensor,
-            ) >= config.SENSOR_INTERVAL_MS:
-
-                last_sensor = (
-                    time.ticks_ms()
+            if (
+                time.ticks_diff(
+                    now,
+                    last_sensor,
                 )
+                >= config.SENSOR_INTERVAL_MS
+            ):
+
+                last_sensor = now
+
 
                 try:
 
                     environment.read()
 
-                except Exception as error:
+                except Exception:
 
-                    print(
-                        "DHT error:",
-                        error,
-                    )
+                    pass
 
-                try:
 
-                    hub.push_state(
-                        build_state(
-                            led,
-                            fan,
-                            buzzer,
-                            rgb,
-                            motion,
-                            steam,
-                            environment,
-                        )
-                    )
+                push_if_changed()
 
-                except Exception as error:
-
-                    print(
-                        "State push error:",
-                        error,
-                    )
 
             # -------------------------------------------------
-            # Hub keepalive
+            # RFID polling
             # -------------------------------------------------
 
-            if time.ticks_diff(
-                time.ticks_ms(),
-                last_keepalive,
-            ) >= config.UPDATE_INTERVAL_MS:
-
-                last_keepalive = (
-                    time.ticks_ms()
+            if (
+                rfid
+                and time.ticks_diff(
+                    now,
+                    last_rfid,
                 )
+                >= config.RFID_SCAN_MS
+            ):
 
-                try:
+                last_rfid = now
 
-                    response = hub.keepalive(
-                        ip
+
+                card = rfid.poll()
+
+
+                if card:
+
+                    allowed = (
+                        not config.RFID_ALLOWED_UIDS
+                        or card
+                        in config.RFID_ALLOWED_UIDS
                     )
 
-                except Exception as error:
 
-                    print(
-                        "Keepalive error:",
-                        error,
-                    )
+                    if allowed:
 
-                    response = None
-
-                if response:
-
-                    # -----------------------------------------
-                    # Alarm
-                    # -----------------------------------------
-
-                    if response.get(
-                        "alarm",
-                        False,
-                    ):
+                        rfid_status = (
+                            "OK "
+                            + card[-10:]
+                        )
 
                         try:
 
                             buzzer.beep(
-                                250
+                                80
                             )
 
                         except Exception:
 
                             pass
 
-                    # -----------------------------------------
-                    # Remote state
-                    # -----------------------------------------
+                    else:
 
-                    if response.get(
-                        "state_update",
-                        False,
-                    ):
+                        rfid_status = (
+                            "DENIED"
+                        )
 
-                        try:
 
-                            remote_state = (
-                                hub.get_state()
-                            )
+                    print(
+                        "RFID card:",
+                        card,
+                        "allowed:",
+                        allowed,
+                    )
 
-                            if remote_state:
 
-                                apply_state(
-                                    remote_state,
+                    menu_render(
+                        lcd,
+                        menu_index,
+                        led,
+                        fan,
+                        buzzer,
+                        rgb,
+                        environment,
+                        rfid_status,
+                        network_status,
+                    )
+
+
+            # -------------------------------------------------
+            # External hub keepalive
+            # -------------------------------------------------
+
+            if not local_mode:
+
+                if (
+                    time.ticks_diff(
+                        now,
+                        last_keepalive,
+                    )
+                    >= config.KEEPALIVE_INTERVAL_MS
+                ):
+
+                    last_keepalive = now
+
+
+                    response = (
+                        hub.keepalive(
+                            ip
+                        )
+                    )
+
+
+                    if response:
+
+                        if response.get(
+                            "alarm",
+                            False,
+                        ):
+
+                            try:
+
+                                buzzer.beep(
+                                    120
+                                )
+
+                            except Exception:
+
+                                pass
+
+
+                # -------------------------------------------------
+                # Remote state polling
+                # -------------------------------------------------
+
+                if (
+                    time.ticks_diff(
+                        now,
+                        last_remote,
+                    )
+                    >= config.REMOTE_POLL_INTERVAL_MS
+                ):
+
+                    last_remote = now
+
+
+                    response = (
+                        hub.get_state()
+                    )
+
+
+                    if response:
+
+                        # CRITICAL:
+                        #
+                        # Do not call push_if_changed()
+                        # immediately after this.
+                        #
+                        # This is the loop-prevention boundary.
+
+                        apply_remote_state(
+                            response,
+                            led,
+                            fan,
+                            buzzer,
+                            rgb,
+                        )
+
+
+                        # Treat the remotely applied state as already
+                        # synchronized. Do not echo it back.
+
+                        last_sent_key = (
+                            state_key(
+                                state_snapshot(
                                     led,
                                     fan,
                                     buzzer,
                                     rgb,
+                                    motion,
+                                    steam,
+                                    environment,
                                 )
-
-                                # Keep the local menu visible
-                                # after remote changes.
-
-                                show_menu(
-                                    lcd,
-                                    menu_index,
-                                    led,
-                                    fan,
-                                    buzzer,
-                                )
-
-                        except Exception as error:
-
-                            print(
-                                "Remote state error:",
-                                error,
                             )
+                        )
 
-            time.sleep_ms(50)
+
+                        menu_render(
+                            lcd,
+                            menu_index,
+                            led,
+                            fan,
+                            buzzer,
+                            rgb,
+                            environment,
+                            rfid_status,
+                            network_status,
+                        )
+
+
+            # -------------------------------------------------
+            # Retry external Wi-Fi while remaining local
+            # -------------------------------------------------
+
+            elif (
+                time.ticks_diff(
+                    now,
+                    last_network_retry,
+                )
+                >= config.NETWORK_RETRY_MS
+            ):
+
+                last_network_retry = now
+
+
+                if (
+                    wlan
+                    and not wlan.isconnected()
+                ):
+
+                    try:
+
+                        wlan.connect(
+                            config.WIFI_SSID,
+                            config.WIFI_PASS,
+                        )
+
+                    except Exception:
+
+                        pass
+
+
+            # -------------------------------------------------
+            # Fast loop
+            # -------------------------------------------------
+
+            time.sleep_ms(
+                config.LOOP_INTERVAL_MS
+            )
+
 
         except Exception as error:
 
             print(
-                "MAIN LOOP ERROR:",
+                "MAIN LOOP:",
                 error,
             )
 
-            time.sleep_ms(500)
+            # Never let a single hardware/network error
+            # kill the local menu.
 
+            time.sleep_ms(
+                50
+            )
 
-# =========================================================
-# Direct execution
-# =========================================================
 
 if __name__ == "__main__":
 
